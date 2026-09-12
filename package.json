@@ -1,0 +1,45 @@
+{
+  "name": "aws-badge-streak-agent",
+  "version": "1.0.0",
+  "description": "Autonomous, stealth interaction agent designed to maintain daily streaks on AWS Builder Center",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "streak-agent": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "auth": "docker compose run --rm --service-ports auth",
+    "auth:login": "docker compose run --rm --service-ports auth",
+    "streak": "docker compose run --rm streak-agent run",
+    "streak:force": "docker compose run --rm streak-agent run --force --verbose",
+    "streak:watch": "docker compose run --rm --service-ports streak-watch",
+    "status": "docker compose run --rm streak-agent status",
+    "history": "docker compose run --rm streak-agent history",
+    "scheduler:start": "docker compose up -d streak-agent",
+    "scheduler:logs": "docker compose logs -f streak-agent",
+    "scheduler:stop": "docker compose down",
+    "install:browsers": "playwright install chromium",
+    "local:auth": "node dist/index.js auth:login",
+    "local:streak": "node dist/index.js run",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "rebrowser-playwright": "^1.51.1",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.9",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7"
+  },
+  "license": "MIT"
+}

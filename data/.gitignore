@@ -1,0 +1,5 @@
+# Ignore runtime data in data directory
+browser-profile/
+streak-agent.db*
+screenshots/
+.scheduler.lock

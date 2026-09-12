@@ -1,0 +1,24 @@
+.agents
+.specify
+specs/
+
+# Dependencies
+node_modules/
+
+# Build
+dist/
+
+# Runtime data
+data/browser-profile/
+data/streak-agent.db*
+data/screenshots/
+data/.scheduler.lock
+
+# Environment & config with secrets
+*.env
+*.env.*
+config.json
+
+# Logs
+*.log
+npm-debug.log*

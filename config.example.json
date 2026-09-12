@@ -1,0 +1,38 @@
+{
+  "schedule": {
+    "windowStart": "10:45",
+    "windowMinutes": 45,
+    "timezone": "America/New_York"
+  },
+  "browser": {
+    "profileDir": "./data/browser-profile",
+    "screenshotOnFailure": true
+  },
+  "comments": {
+    "provider": "gemini",
+    "geminiApiKey": "",
+    "geminiModel": "gemini-2.0-flash",
+    "ollamaBaseUrl": "http://localhost:11434",
+    "ollamaModel": "llama3.2:3b",
+    "timeoutMs": 8000
+  },
+  "notifications": {
+    "telegram": {
+      "enabled": false,
+      "botToken": "",
+      "chatId": ""
+    },
+    "discord": {
+      "enabled": false,
+      "webhookUrl": ""
+    }
+  },
+  "database": {
+    "path": "./data/streak-agent.db"
+  },
+  "retry": {
+    "maxAttempts": 3,
+    "baseDelayMs": 2000,
+    "maxDelayMs": 30000
+  }
+}

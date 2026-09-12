@@ -1,0 +1,47 @@
+services:
+  # Daily automated streak runner background service
+  streak-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aws-badge-streak-agent
+    shm_size: 2gb
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
+    environment:
+      - NODE_ENV=production
+    command: ["scheduler:start"]
+
+  # One-time interactive browser authentication service (with Web UI on port 6080)
+  auth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aws-streak-auth
+    shm_size: 2gb
+    ports:
+      - "6080:6080"
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
+    environment:
+      - NODE_ENV=development
+    command: ["auth:login"]
+
+  # Live visual execution service (watch the agent visit, like, and comment live on port 6080)
+  streak-watch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aws-streak-watch
+    shm_size: 2gb
+    ports:
+      - "6080:6080"
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
+    environment:
+      - NODE_ENV=development
+    command: ["streak:watch", "--force", "--verbose"]
