@@ -132,6 +132,8 @@ export async function verifyAuthentication(
         waitUntil: 'domcontentloaded',
         timeout: 30000,
       });
+      // Allow React client-side hydration to complete
+      await page.waitForTimeout(3000);
     } catch (err: any) {
       process.stderr.write(`[WARN] Navigation to builder.aws.com failed: ${err.message}\n`);
       return false;
@@ -140,7 +142,7 @@ export async function verifyAuthentication(
 
   const currentUrl = page.url();
 
-  // Tier 1: If on an external auth/SSO/signin portal, user is in the middle of authenticating
+  // Tier 1: External auth/SSO/signin portal means user is actively logging in or unauthenticated
   if (
     !currentUrl.includes('builder.aws.com') ||
     currentUrl.includes('profile.aws.amazon.com') ||
@@ -151,11 +153,11 @@ export async function verifyAuthentication(
     return false;
   }
 
-  // Tier 2: Check for presence of ANY visible "Sign in" button.
+  // Tier 2: Check for presence of ANY visible "Sign in" or "Log in" button.
   // If a Sign In button is visible, the user is definitively NOT authenticated.
   try {
     const signInButtons = await page.$$(
-      'button[aria-label*="Sign in" i], button:has-text("Sign in"), a[href*="signin"], button:has-text("Log in"), button[aria-label*="Log in" i]'
+      'button[aria-label*="Sign in" i], button:has-text("Sign in"), a[href*="signin"], button:has-text("Log in"), button[aria-label*="Log in" i], a:has-text("Sign in")'
     );
     for (const btn of signInButtons) {
       const isVisible = await btn.isVisible().catch(() => false);
@@ -169,12 +171,20 @@ export async function verifyAuthentication(
 
   // Tier 3: Verify authenticated avatar/profile menu in the DOM
   try {
-    const avatar = await page.$(
-      '[data-testid*="user-profile"], [data-testid*="avatar"], button[aria-label*="profile" i], button[aria-label*="account" i], div[class*="ProfileMenu"], [data-testid="header-user-menu"]'
-    );
-    if (avatar) {
-      const isAvatarVisible = await avatar.isVisible().catch(() => false);
-      if (isAvatarVisible) {
+    const avatarSelectors = [
+      '[data-testid*="user-profile"]',
+      '[data-testid*="avatar"]',
+      'button[aria-label*="profile" i]',
+      'button[aria-label*="account" i]',
+      'div[class*="ProfileMenu"]',
+      '[data-testid="header-user-menu"]',
+      'a[href*="/profile/"]',
+      'button[aria-label*="User menu" i]',
+    ];
+
+    for (const sel of avatarSelectors) {
+      const avatar = await page.$(sel);
+      if (avatar && (await avatar.isVisible().catch(() => false))) {
         return true;
       }
     }
@@ -188,6 +198,7 @@ export async function verifyAuthentication(
       try {
         const res = await fetch('https://api.builder.aws.com/rms/badges/progress', {
           method: 'POST',
+          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ locale: 'en', pageSize: 1 }),
         });
@@ -200,34 +211,17 @@ export async function verifyAuthentication(
       return true;
     }
   } catch {
-    // Continue to storage checks
+    // Continue to token check
   }
 
-  // Tier 5: Verify valid Cognito/Builder session tokens in localStorage
+  // Tier 5: Verify valid Cognito session tokens in localStorage
   const freshness = await checkTokenFreshness(page);
   if (freshness.isValid) {
     return true;
   }
 
-  // Tier 6: Check specific authenticated cookies (not generic tracking cookies)
-  try {
-    const cookies = await page.context().cookies('https://builder.aws.com');
-    const hasAuthCookie = cookies.some(
-      (c) =>
-        c.name === 'builder-session-token' ||
-        c.name === 'builder-auth-provider' ||
-        c.name.includes('builder-session') ||
-        c.name.includes('IdToken') ||
-        c.name.includes('aws-userInfo') ||
-        c.name === 'builder-id'
-    );
-    if (hasAuthCookie) {
-      return true;
-    }
-  } catch {
-    return false;
-  }
-
+  // If none of the above confirmed authentication, the user is NOT authenticated.
+  // (Never trust raw cookie existence alone, as expired or guest cookies share the same names)
   return false;
 }
 
@@ -244,4 +238,228 @@ export async function waitForTokenRefresh(page: Page, timeoutMs: number = 15000)
   }
 
   return false;
+}
+
+export interface AutoLoginCredentials {
+  email: string;
+  password: string;
+}
+
+export function getStoredCredentials(): AutoLoginCredentials | null {
+  const email = process.env.AWS_BUILDER_EMAIL;
+  const password = process.env.AWS_BUILDER_PASSWORD;
+
+  if (!email || !password) {
+    return null;
+  }
+
+  return { email, password };
+}
+
+/**
+ * Automated credential-based re-login for AWS Builder Center.
+ * Uses AWS_BUILDER_EMAIL and AWS_BUILDER_PASSWORD from the environment (.env file).
+ *
+ * Flow: Navigate to builder.aws.com → redirected to sign-in → enter email → enter password
+ *       → trust device → wait for session → persist cookies.
+ *
+ * Returns true if re-authentication succeeded, false if it couldn't complete.
+ */
+export async function autoLogin(
+  page: Page,
+  credentials: AutoLoginCredentials,
+  profileDir: string
+): Promise<boolean> {
+  process.stdout.write(`[AUTO-LOGIN] Attempting automated re-authentication with stored credentials...\n`);
+
+  try {
+    // Navigate to Builder Center, which redirects to the sign-in flow
+    await page.goto('https://builder.aws.com', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+
+    // Wait for the sign-in page to load (could be profile.aws.amazon.com or similar)
+    await page.waitForTimeout(3000);
+
+    // Step 1: Find and fill the email field
+    const emailSelectors = [
+      'input[type="email"]',
+      'input[name="email"]',
+      'input[id*="email" i]',
+      'input[placeholder*="email" i]',
+      'input[aria-label*="email" i]',
+      'input[name="username"]',
+      'input[id*="username" i]',
+    ];
+
+    let emailFilled = false;
+    for (const sel of emailSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el && (await el.isVisible().catch(() => false))) {
+          await el.click();
+          await page.waitForTimeout(300);
+          // Clear any existing value
+          await el.fill('');
+          await page.waitForTimeout(200);
+          // Type email character by character with slight delays for anti-detection
+          for (const char of credentials.email) {
+            await page.keyboard.type(char);
+            await page.waitForTimeout(50 + Math.floor(Math.random() * 80));
+          }
+          emailFilled = true;
+          process.stdout.write(`[AUTO-LOGIN] Email entered.\n`);
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    if (!emailFilled) {
+      // Check if we're already past the email step (e.g., session partially valid)
+      const isAlreadyAuth = await verifyAuthentication(page, false);
+      if (isAlreadyAuth) {
+        process.stdout.write(`[AUTO-LOGIN] Already authenticated — no login needed.\n`);
+        return true;
+      }
+      process.stderr.write(`[AUTO-LOGIN] Could not find email input field on sign-in page.\n`);
+      return false;
+    }
+
+    // Click "Next" / "Continue" / "Sign in" button after email
+    const nextBtnSelectors = [
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'button:has-text("Next")',
+      'button:has-text("Continue")',
+      'button:has-text("Sign in")',
+      'button:has-text("Log in")',
+    ];
+
+    for (const sel of nextBtnSelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn && (await btn.isVisible().catch(() => false))) {
+          await btn.click();
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    // Wait for password field to appear
+    await page.waitForTimeout(3000);
+
+    // Step 2: Find and fill the password field
+    const passwordSelectors = [
+      'input[type="password"]',
+      'input[name="password"]',
+      'input[id*="password" i]',
+      'input[placeholder*="password" i]',
+      'input[aria-label*="password" i]',
+    ];
+
+    let passwordFilled = false;
+    for (const sel of passwordSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el && (await el.isVisible().catch(() => false))) {
+          await el.click();
+          await page.waitForTimeout(300);
+          await el.fill('');
+          await page.waitForTimeout(200);
+          for (const char of credentials.password) {
+            await page.keyboard.type(char);
+            await page.waitForTimeout(40 + Math.floor(Math.random() * 60));
+          }
+          passwordFilled = true;
+          process.stdout.write(`[AUTO-LOGIN] Password entered.\n`);
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    if (!passwordFilled) {
+      process.stderr.write(`[AUTO-LOGIN] Could not find password input field.\n`);
+      return false;
+    }
+
+    // Click the sign-in / submit button
+    for (const sel of nextBtnSelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn && (await btn.isVisible().catch(() => false))) {
+          await btn.click();
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    // Wait for login to process (redirects, MFA prompts, etc.)
+    await page.waitForTimeout(5000);
+
+    // Step 3: Try to click "Trust this device" / "Remember" if present
+    const trustSelectors = [
+      'button:has-text("Trust")',
+      'button:has-text("Remember")',
+      'button:has-text("Yes")',
+      'input[type="checkbox"][id*="remember" i]',
+      'label:has-text("Remember")',
+      'label:has-text("Trust")',
+    ];
+
+    for (const sel of trustSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el && (await el.isVisible().catch(() => false))) {
+          await el.click();
+          process.stdout.write(`[AUTO-LOGIN] Clicked "Trust/Remember this device".\n`);
+          await page.waitForTimeout(2000);
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    // Step 4: Wait for authentication to complete (poll for up to 30 seconds)
+    const maxWaitMs = 30_000;
+    const pollIntervalMs = 2000;
+    const start = Date.now();
+
+    while (Date.now() - start < maxWaitMs) {
+      const isAuth = await verifyAuthentication(page, false);
+      if (isAuth) {
+        process.stdout.write(`[AUTO-LOGIN] ✅ Re-authentication successful!\n`);
+        await persistSession(page.context(), profileDir);
+        process.stdout.write(`[AUTO-LOGIN] Session cookies saved to ${profileDir}/storage_state.json.\n`);
+        return true;
+      }
+      await page.waitForTimeout(pollIntervalMs);
+    }
+
+    // Check one final time after navigating explicitly
+    const finalCheck = await verifyAuthentication(page, true);
+    if (finalCheck) {
+      process.stdout.write(`[AUTO-LOGIN] ✅ Re-authentication successful (final check)!\n`);
+      await persistSession(page.context(), profileDir);
+      return true;
+    }
+
+    process.stderr.write(
+      `[AUTO-LOGIN] ⚠️ Auto-login could not verify authentication after 30s.\n` +
+        `[AUTO-LOGIN] This may require manual MFA. Run: pnpm run auth\n`
+    );
+    return false;
+  } catch (err: any) {
+    process.stderr.write(`[AUTO-LOGIN] Failed: ${err.message}\n`);
+    return false;
+  }
 }

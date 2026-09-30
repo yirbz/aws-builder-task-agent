@@ -8,7 +8,7 @@ import {
   insertInteraction,
 } from './db.js';
 import type { CommentGenerator } from './comment-generator.js';
-import { humanClick, humanScroll, humanType, randomDelay } from './human-behavior.js';
+import { humanClick, humanScroll, humanScrollToBottom, humanType, randomDelay } from './human-behavior.js';
 
 export async function executeComment(
   page: Page,
@@ -67,11 +67,7 @@ export async function executeComment(
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await randomDelay(1500, 3000);
 
-    // Read through the article naturally
-    await humanScroll(page);
-    await randomDelay(2000, 4000);
-
-    // Extract title and preview text for LLM context
+    // Extract title and preview text for LLM context (do this before scrolling down)
     const headingEl = await page.$('h1, [data-testid*="post-title"], [data-testid*="article-title"]');
     if (headingEl) {
       const titleText = await headingEl.textContent();
@@ -84,6 +80,15 @@ export async function executeComment(
       const pText = await p.textContent();
       if (pText) previewText += ` ${pText.trim()}`;
     }
+
+    // Read through the article naturally (light scroll at the top)
+    await humanScroll(page);
+    await randomDelay(2000, 4000);
+
+    // Scroll all the way to the bottom where the comment section lives.
+    // On AWS Builder Center, the comment area is typically far below the article content.
+    await humanScrollToBottom(page);
+    await randomDelay(1500, 3000);
 
     // Generate unique comment
     let commentText = await commentGenerator.generate({
@@ -106,31 +111,86 @@ export async function executeComment(
       'textarea[placeholder*="comment" i]',
       'textarea[placeholder*="thoughts" i]',
       'textarea[placeholder*="reply" i]',
+      'textarea[placeholder*="write" i]',
+      'textarea[placeholder*="say" i]',
       'div[contenteditable="true"]',
       '[data-testid*="comment-input"]',
+      '[data-testid*="comment-box"]',
+      '[data-testid*="comment-field"]',
       'textarea',
     ];
 
+    // First pass: look for already-visible comment input
     let foundSelector: string | null = null;
     for (const sel of commentInputSelectors) {
       const el = await page.$(sel);
-      if (el && (await el.isVisible().catch(() => false))) {
-        foundSelector = sel;
-        break;
+      if (el) {
+        // Scroll the element into view in case it's just barely off-screen
+        await el.scrollIntoViewIfNeeded().catch(() => {});
+        await randomDelay(300, 600);
+        if (await el.isVisible().catch(() => false)) {
+          foundSelector = sel;
+          break;
+        }
       }
     }
 
+    // Second pass: look for a button/link to open/expand the comment section
     if (!foundSelector) {
-      // Look for a button to open comment section first
-      const openCommentBtn = await page.$(
-        'button:has-text("Comment"), button[aria-label*="comment" i], [data-testid*="open-comment"]'
-      );
-      if (openCommentBtn && (await openCommentBtn.isVisible().catch(() => false))) {
-        await humanClick(page, 'button:has-text("Comment"), button[aria-label*="comment" i]');
-        await randomDelay(1000, 2000);
-        for (const sel of commentInputSelectors) {
-          const el = await page.$(sel);
-          if (el && (await el.isVisible().catch(() => false))) {
+      const openCommentSelectors = [
+        'button:has-text("Comment")',
+        'button:has-text("Add a comment")',
+        'button:has-text("Write a comment")',
+        'button:has-text("Leave a comment")',
+        'button:has-text("Reply")',
+        'a:has-text("Comment")',
+        'button[aria-label*="comment" i]',
+        '[data-testid*="open-comment"]',
+        '[data-testid*="add-comment"]',
+        '[data-testid*="comment-button"]',
+      ];
+
+      for (const sel of openCommentSelectors) {
+        try {
+          const btn = await page.$(sel);
+          if (btn) {
+            await btn.scrollIntoViewIfNeeded().catch(() => {});
+            await randomDelay(300, 500);
+            if (await btn.isVisible().catch(() => false)) {
+              await humanClick(page, sel);
+              await randomDelay(1500, 3000);
+              // Re-check for comment input after clicking
+              for (const inputSel of commentInputSelectors) {
+                const el = await page.$(inputSel);
+                if (el) {
+                  await el.scrollIntoViewIfNeeded().catch(() => {});
+                  await randomDelay(300, 500);
+                  if (await el.isVisible().catch(() => false)) {
+                    foundSelector = inputSel;
+                    break;
+                  }
+                }
+              }
+              if (foundSelector) break;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    // Third pass: scroll to absolute bottom again and try one more time
+    if (!foundSelector) {
+      await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+      await randomDelay(2000, 4000);
+
+      for (const sel of commentInputSelectors) {
+        const el = await page.$(sel);
+        if (el) {
+          await el.scrollIntoViewIfNeeded().catch(() => {});
+          await randomDelay(300, 600);
+          if (await el.isVisible().catch(() => false)) {
             foundSelector = sel;
             break;
           }
@@ -139,6 +199,15 @@ export async function executeComment(
     }
 
     if (!foundSelector) {
+      // Check if user is unauthenticated on this page
+      const signInPrompt = await page.$(
+        'button:has-text("Sign in"), a[href*="signin"], [data-testid*="signin"], button:has-text("Log in"), a:has-text("Sign in")'
+      );
+      if (signInPrompt && (await signInPrompt.isVisible().catch(() => false))) {
+        throw new Error(
+          'Authentication required: "Sign in" prompt detected on article page. Please authenticate via "pnpm run auth".'
+        );
+      }
       throw new Error('Comment input field could not be found on page');
     }
 

@@ -107,7 +107,7 @@ export async function sendTelegramNotification(
     formData.append('caption', fullHtml.slice(0, 1024));
     formData.append('parse_mode', 'HTML');
 
-    const blob = new Blob([screenshotBuffer], { type: 'image/png' });
+    const blob = new Blob([new Uint8Array(screenshotBuffer)], { type: 'image/png' });
     formData.append('photo', blob, 'screenshot.png');
 
     const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
@@ -168,7 +168,7 @@ export async function sendDiscordNotification(
       })
     );
 
-    const blob = new Blob([screenshotBuffer], { type: 'image/png' });
+    const blob = new Blob([new Uint8Array(screenshotBuffer)], { type: 'image/png' });
     formData.append('files[0]', blob, 'screenshot.png');
 
     const res = await fetch(webhookUrl, {
