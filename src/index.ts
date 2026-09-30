@@ -187,8 +187,10 @@ async function handleAuthLogin(cliArgs: CliArgs): Promise<number> {
     const start = Date.now();
 
     let authenticated = false;
+    let pollCount = 0;
     while (Date.now() - start < maxWaitMs) {
       await page.waitForTimeout(pollIntervalMs);
+      pollCount++;
 
       // Check all open pages in context (handles redirects/popups)
       const pages = context.pages();
@@ -197,22 +199,8 @@ async function handleAuthLogin(cliArgs: CliArgs): Promise<number> {
         if (authenticated) break;
       }
 
-      // Also verify context-level session cookies directly
-      if (!authenticated) {
-        try {
-          const cookies = await context.cookies('https://builder.aws.com');
-          const hasSession = cookies.some(
-            (c) =>
-              c.name === 'builder-session-token' ||
-              c.name === 'builder-auth-provider' ||
-              c.name.includes('builder-session')
-          );
-          if (hasSession) {
-            authenticated = true;
-          }
-        } catch {
-          // Context reading error
-        }
+      if (pollCount % 5 === 0 && !authenticated) {
+        process.stdout.write(`[AUTH] Still waiting for sign-in completion at http://localhost:6080/ ...\n`);
       }
 
       if (authenticated) {

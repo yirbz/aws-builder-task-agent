@@ -23,6 +23,8 @@ import {
   verifyAuthentication,
   persistSession,
   checkTokenFreshness,
+  autoLogin,
+  getStoredCredentials,
 } from './auth.js';
 import { executeVisit } from './visit.js';
 import { executeLike } from './like.js';
@@ -251,7 +253,28 @@ export async function runDailyStreak(
         const stepStart = Date.now();
         emitter.stepStarted('authenticate');
 
-        const isAuthenticated = await verifyAuthentication(page!, true);
+        let isAuthenticated = await verifyAuthentication(page!, true);
+
+        // If session is expired, attempt automated re-login with stored credentials
+        if (!isAuthenticated) {
+          const credentials = getStoredCredentials();
+          if (credentials) {
+            process.stdout.write(`[AUTH] Session expired. Attempting auto-login with stored credentials...\n`);
+            const autoLoginSuccess = await autoLogin(page!, credentials, config.browser.profileDir);
+            if (autoLoginSuccess) {
+              isAuthenticated = true;
+              process.stdout.write(`[AUTH] ✅ Auto-login recovered the session successfully.\n`);
+            } else {
+              process.stderr.write(`[AUTH] Auto-login failed. Manual re-authentication required.\n`);
+            }
+          } else {
+            process.stderr.write(
+              `[AUTH] Session expired and no credentials found in .env file.\n` +
+              `[AUTH] To enable auto-login, add AWS_BUILDER_EMAIL and AWS_BUILDER_PASSWORD to your .env file.\n`
+            );
+          }
+        }
+
         const duration = Date.now() - stepStart;
 
         if (!isAuthenticated) {
@@ -259,16 +282,17 @@ export async function runDailyStreak(
             'authenticate',
             duration,
             'terminal',
-            "Authentication session expired. Run 'npm run auth:login' to re-authenticate.",
+            "Authentication session expired. Run 'pnpm run auth' to re-authenticate, or add credentials to .env for auto-login.",
             0
           );
-          throw new Error("Authentication session expired. Run 'npm run auth:login' to re-authenticate.");
+          throw new Error("Authentication session expired. Run 'pnpm run auth' to re-authenticate, or add credentials to .env for auto-login.");
         }
 
         const freshness = await checkTokenFreshness(page!);
         emitter.stepCompleted('authenticate', duration, {
           lastRefresh: freshness.lastRefresh,
           ageMs: freshness.ageMs,
+          autoLoginUsed: !!(getStoredCredentials()),
         });
 
         return {
