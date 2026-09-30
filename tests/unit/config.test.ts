@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConfig, applyEnvOverrides, DEFAULT_CONFIG } from '../../src/config.js';
+import { validateConfig, applyEnvOverrides, DEFAULT_CONFIG, loadConfig } from '../../src/config.js';
 import type { Config } from '../../src/types.js';
 
 describe('Configuration Module', () => {
@@ -54,5 +54,12 @@ describe('Configuration Module', () => {
     delete process.env.STREAK_SCHEDULE__WINDOW_START;
     delete process.env.STREAK_SCHEDULE__WINDOW_MINUTES;
     delete process.env.STREAK_COMMENTS__PROVIDER;
+  });
+
+  it('should gracefully handle configPath being a directory without throwing EISDIR', () => {
+    // Pass an existing directory, e.g. ./tests
+    const config = loadConfig('./tests');
+    expect(config).toBeDefined();
+    expect(config.schedule.windowStart).toBe('10:45');
   });
 });

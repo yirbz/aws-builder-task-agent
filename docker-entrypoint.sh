@@ -15,6 +15,55 @@ start_display() {
   done
 }
 
+# Check if /app/config.json was mounted as a directory by Docker
+if [ -d "/app/config.json" ]; then
+  echo "⚠️  [NOTICE] /app/config.json was mounted as a directory."
+  echo "   Docker created this directory because 'config.json' was missing on the host."
+  echo "   To configure on host: rm -rf config.json && cp config.example.json config.json"
+fi
+
+print_connection_urls() {
+  local TITLE="$1"
+  local TS_IP="${TAILSCALE_IP:-}"
+  if [ -z "$TS_IP" ]; then
+    TS_IP=$(ip -4 addr show dev tailscale0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || true)
+  fi
+
+  local H_NAME="${HOST_HOSTNAME:-}"
+  if [ -z "$H_NAME" ] || [ "$H_NAME" = "localhost" ]; then
+    H_NAME=$(cat /etc/hostname 2>/dev/null || hostname || true)
+  fi
+
+  local LAN_IP
+  LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+
+  echo ""
+  echo "========================================================================"
+  echo "🌐 $TITLE"
+  echo "========================================================================"
+  if [ -n "$TS_IP" ]; then
+    echo "👉 FROM YOUR LAPTOP (VIA TAILSCALE):"
+    echo "   🔗 http://${TS_IP}:6080/"
+    if [ -n "$H_NAME" ] && [ "$H_NAME" != "localhost" ]; then
+      echo "   (or via MagicDNS: http://${H_NAME}:6080/)"
+    fi
+    echo ""
+  fi
+  if [ -n "$LAN_IP" ] && [ "$LAN_IP" != "$TS_IP" ] && [ "$LAN_IP" != "127.0.0.1" ]; then
+    echo "👉 FROM YOUR LOCAL NETWORK (LAN):"
+    echo "   🔗 http://${LAN_IP}:6080/"
+    echo ""
+  fi
+  echo "👉 FROM HOMELAB DIRECTLY:"
+  echo "   🔗 http://localhost:6080/"
+  echo ""
+  echo "👉 ALTERNATIVE: VIA SSH PORT-FORWARDING (run on your laptop terminal):"
+  echo "   ssh -L 6080:localhost:6080 yvniel@${H_NAME:-<homelab-ip>}"
+  echo "   then open on laptop browser: http://localhost:6080/"
+  echo "========================================================================"
+  echo ""
+}
+
 COMMAND="${1:-run}"
 
 # 1. Interactive Authentication flow with Web-based noVNC
@@ -34,15 +83,10 @@ if [ "$COMMAND" = "auth:login" ] || [ "$COMMAND" = "auth" ]; then
   WEBSOCKIFY_PID=$!
   sleep 1
 
-  echo ""
-  echo "========================================================================"
-  echo "🌐 INTERACTIVE BROWSER READY FOR AWS BUILDER CENTER LOGIN!"
-  echo "👉 Open in your web browser: http://localhost:6080/"
-  echo "   (or: http://localhost:6080/vnc.html)"
-  echo "========================================================================"
-  echo ""
+  print_connection_urls "INTERACTIVE BROWSER READY FOR AWS BUILDER CENTER LOGIN!"
+
   echo "Steps to complete login:"
-  echo "  1. Open http://localhost:6080/ in your browser (click 'Connect' if prompted)."
+  echo "  1. Open one of the URLs above in your laptop browser."
   echo "  2. Sign in with your AWS Builder ID."
   echo "  3. Complete MFA / CAPTCHA and select 'Remember this device / Trust this device'."
   echo "  4. The agent will detect the session, save tokens to data/browser-profile/,"
@@ -63,7 +107,6 @@ fi
 if [ "$COMMAND" = "streak:watch" ] || [ "$COMMAND" = "run:watch" ]; then
   echo "========================================================================"
   echo "🚀 STARTING LIVE VISUAL EXECUTION ENVIRONMENT"
-  echo "🌐 View live execution in your browser: http://localhost:6080/"
   echo "========================================================================"
 
   start_display
@@ -76,6 +119,8 @@ if [ "$COMMAND" = "streak:watch" ] || [ "$COMMAND" = "run:watch" ]; then
   websockify --web /usr/share/novnc 6080 localhost:5900 &>/dev/null &
   WEBSOCKIFY_PID=$!
   sleep 1
+
+  print_connection_urls "LIVE VISUAL EXECUTION STREAMING ON PORT 6080!"
 
   DISPLAY=:99 node dist/index.js run "${@:2}"
   RUN_EXIT=$?

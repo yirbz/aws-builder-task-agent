@@ -87,21 +87,31 @@ Edit `config.json` with your desired run window and notifications:
 Because AWS Builder ID login requires solving adaptive WAF CAPTCHAs and MFA, the container provides an **in-browser visual interface via noVNC**:
 
 ```bash
-# Using pnpm shortcut:
+# Using pnpm shortcut (auto-detects Tailscale IP & hostname):
 pnpm run auth
 
 # Or directly with Docker Compose:
 docker compose run --rm --service-ports auth
 ```
 
-1. The console will display:
+1. The console will display direct connection URLs:
    ```text
    ========================================================================
    🌐 INTERACTIVE BROWSER READY FOR AWS BUILDER CENTER LOGIN!
-   👉 Open in your web browser: http://localhost:6080/
+   ========================================================================
+   👉 FROM YOUR LAPTOP (VIA TAILSCALE):
+      🔗 http://100.x.y.z:6080/
+      (or via MagicDNS: http://yvniel-homelab:6080/)
+
+   👉 FROM HOMELAB DIRECTLY:
+      🔗 http://localhost:6080/
+
+   👉 ALTERNATIVE: VIA SSH PORT-FORWARDING (run on your laptop terminal):
+      ssh -L 6080:localhost:6080 yvniel@yvniel-homelab
+      then open on laptop browser: http://localhost:6080/
    ========================================================================
    ```
-2. Open **`http://localhost:6080/`** in your host browser (Chrome, Firefox, Safari, Edge).
+2. Open the URL in your laptop browser (Chrome, Firefox, Safari, Edge). The interface automatically connects to the desktop session.
 3. You will see a live remote desktop showing Chromium loaded at `builder.aws.com`.
 4. Sign in with your **AWS Builder ID**, complete MFA / CAPTCHA, and check **"Remember this device / Trust this device"**.
 5. The agent monitors authentication status passively without page refreshes. Once your session is confirmed via the Builder Center API and profile menu, it exports session cookies to `./data/browser-profile/storage_state.json` and shuts down cleanly.

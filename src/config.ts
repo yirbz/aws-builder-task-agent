@@ -199,8 +199,29 @@ export function loadConfig(configPath?: string): Config {
 
   if (fs.existsSync(resolvedPath)) {
     try {
-      const raw = fs.readFileSync(resolvedPath, 'utf-8');
-      fileConfig = JSON.parse(raw);
+      const stat = fs.statSync(resolvedPath);
+      if (stat.isDirectory()) {
+        const nestedConfig = path.join(resolvedPath, 'config.json');
+        if (fs.existsSync(nestedConfig) && fs.statSync(nestedConfig).isFile()) {
+          const raw = fs.readFileSync(nestedConfig, 'utf-8');
+          fileConfig = JSON.parse(raw);
+        } else {
+          process.stderr.write(
+            `[CONFIG WARNING] "${resolvedPath}" is a directory, not a file.\n` +
+              `This usually happens when Docker auto-creates "./config.json" as a directory because it was missing on the host.\n` +
+              `To fix on host: "rm -rf config.json && cp config.example.json config.json"\n` +
+              `Falling back to default / example configuration.\n`
+          );
+          const examplePath = path.resolve(path.dirname(resolvedPath), 'config.example.json');
+          if (fs.existsSync(examplePath) && fs.statSync(examplePath).isFile()) {
+            const raw = fs.readFileSync(examplePath, 'utf-8');
+            fileConfig = JSON.parse(raw);
+          }
+        }
+      } else {
+        const raw = fs.readFileSync(resolvedPath, 'utf-8');
+        fileConfig = JSON.parse(raw);
+      }
     } catch (err: any) {
       throw new Error(`Failed to parse configuration file at "${resolvedPath}": ${err.message}`);
     }

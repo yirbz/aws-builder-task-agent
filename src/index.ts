@@ -171,10 +171,14 @@ async function handleAuthLogin(cliArgs: CliArgs): Promise<number> {
   const config = loadConfig(cliArgs.configPath);
   ensureDirectories(config);
 
+  const remoteUrl = process.env.TAILSCALE_IP
+    ? `http://${process.env.TAILSCALE_IP}:6080/`
+    : 'http://localhost:6080/';
+
   process.stdout.write(
     `[AUTH] Launching interactive headed browser for AWS Builder Center login...\n` +
       `[AUTH] Please complete login, MFA, and select 'Remember this device'.\n` +
-      `[AUTH] The window will automatically save session cookies and close upon successful authentication.\n`
+      `[AUTH] Access web interface at: ${remoteUrl}\n`
   );
 
   const { context, page } = await launchAuthenticatedContext(config, true);
@@ -200,7 +204,7 @@ async function handleAuthLogin(cliArgs: CliArgs): Promise<number> {
       }
 
       if (pollCount % 5 === 0 && !authenticated) {
-        process.stdout.write(`[AUTH] Still waiting for sign-in completion at http://localhost:6080/ ...\n`);
+        process.stdout.write(`[AUTH] Still waiting for sign-in completion at ${remoteUrl} ...\n`);
       }
 
       if (authenticated) {

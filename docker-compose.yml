@@ -30,6 +30,8 @@ services:
       - ./config.json:/app/config.json:ro
     environment:
       - NODE_ENV=development
+      - TAILSCALE_IP=${TAILSCALE_IP:-}
+      - HOST_HOSTNAME=${HOST_HOSTNAME:-}
     command: ["auth:login"]
 
   # Live visual execution service (watch the agent visit, like, and comment live on port 6080)
@@ -46,4 +48,6 @@ services:
       - ./config.json:/app/config.json:ro
     environment:
       - NODE_ENV=development
+      - TAILSCALE_IP=${TAILSCALE_IP:-}
+      - HOST_HOSTNAME=${HOST_HOSTNAME:-}
     command: ["streak:watch", "--force", "--verbose"]

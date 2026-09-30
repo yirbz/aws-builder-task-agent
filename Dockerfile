@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fluxbox \
     net-tools \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/share/novnc/vnc.html /usr/share/novnc/index.html
+    && echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>AWS Builder Streak Agent</title><meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=true&resize=remote"><script>window.location.replace("vnc.html?autoconnect=true&resize=remote");</script></head><body style="background:#1a1a1a;color:#eee;font-family:sans-serif;text-align:center;padding-top:60px;"><h2>Connecting to session...</h2><p><a href="vnc.html?autoconnect=true&resize=remote" style="color:#4dabf7;">Click here if not redirected automatically</a></p></body></html>' > /usr/share/novnc/index.html
 
 # Install pnpm inside container
 RUN npm install -g pnpm@11.7.0
