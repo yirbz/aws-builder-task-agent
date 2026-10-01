@@ -203,28 +203,41 @@ export async function sendNotification(
 ): Promise<void> {
   const tasks: Promise<void>[] = [];
 
-  if (config.notifications.telegram.enabled && config.notifications.telegram.botToken && config.notifications.telegram.chatId) {
+  const tgToken = config.notifications.telegram.botToken;
+  const tgChatId = config.notifications.telegram.chatId;
+  const tgEnabled = config.notifications.telegram.enabled;
+
+  if (tgEnabled && tgToken && tgChatId) {
     tasks.push(
-      sendTelegramNotification(
-        config.notifications.telegram.botToken,
-        config.notifications.telegram.chatId,
-        report,
-        screenshotBuffer
-      ).catch((err) => {
-        process.stderr.write(`[WARN] Failed to dispatch Telegram alert: ${err.message}\n`);
-      })
+      sendTelegramNotification(tgToken, tgChatId, report, screenshotBuffer)
+        .then(() => {
+          process.stdout.write(
+            `[NOTIFY] Telegram notification successfully dispatched to chat ${tgChatId}.\n`
+          );
+        })
+        .catch((err) => {
+          process.stderr.write(`[WARN] Failed to dispatch Telegram alert: ${err.message}\n`);
+        })
+    );
+  } else if (tgToken || tgChatId) {
+    process.stderr.write(
+      `[NOTIFY INFO] Telegram notification skipped: enabled=${tgEnabled}, ` +
+        `hasToken=${Boolean(tgToken)}, hasChatId=${Boolean(tgChatId)}\n`
     );
   }
 
-  if (config.notifications.discord.enabled && config.notifications.discord.webhookUrl) {
+  const dcUrl = config.notifications.discord.webhookUrl;
+  const dcEnabled = config.notifications.discord.enabled;
+
+  if (dcEnabled && dcUrl) {
     tasks.push(
-      sendDiscordNotification(
-        config.notifications.discord.webhookUrl,
-        report,
-        screenshotBuffer
-      ).catch((err) => {
-        process.stderr.write(`[WARN] Failed to dispatch Discord alert: ${err.message}\n`);
-      })
+      sendDiscordNotification(dcUrl, report, screenshotBuffer)
+        .then(() => {
+          process.stdout.write(`[NOTIFY] Discord notification successfully dispatched.\n`);
+        })
+        .catch((err) => {
+          process.stderr.write(`[WARN] Failed to dispatch Discord alert: ${err.message}\n`);
+        })
     );
   }
 

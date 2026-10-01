@@ -68,6 +68,19 @@ describe('Configuration Module', () => {
     delete process.env.GEMINI_MODEL;
   });
 
+  it('should auto-enable telegram if botToken and chatId are present in env', () => {
+    process.env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11';
+    process.env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID = '987654321';
+
+    const overridden = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(overridden.notifications.telegram.enabled).toBe(true);
+    expect(overridden.notifications.telegram.botToken).toBe('123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11');
+    expect(overridden.notifications.telegram.chatId).toBe('987654321');
+
+    delete process.env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN;
+    delete process.env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID;
+  });
+
   it('should gracefully handle configPath being a directory without throwing EISDIR', () => {
     // Pass an existing directory, e.g. ./tests
     const config = loadConfig('./tests');

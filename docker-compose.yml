@@ -23,6 +23,8 @@ services:
       dockerfile: Dockerfile
     container_name: aws-streak-auth
     shm_size: 2gb
+    env_file:
+      - .env
     ports:
       - "6080:6080"
     volumes:
@@ -41,6 +43,8 @@ services:
       dockerfile: Dockerfile
     container_name: aws-streak-watch
     shm_size: 2gb
+    env_file:
+      - .env
     ports:
       - "6080:6080"
     volumes:

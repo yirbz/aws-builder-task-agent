@@ -159,21 +159,32 @@ export function applyEnvOverrides(config: Config): Config {
     cfg.comments.timeoutMs = Number.parseInt(env.STREAK_COMMENTS__TIMEOUT_MS, 10);
   }
 
-  if (env.STREAK_NOTIFICATIONS__TELEGRAM__ENABLED !== undefined) {
-    cfg.notifications.telegram.enabled = env.STREAK_NOTIFICATIONS__TELEGRAM__ENABLED === 'true';
+  if (env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN || env.TELEGRAM_BOT_TOKEN) {
+    cfg.notifications.telegram.botToken =
+      env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN || env.TELEGRAM_BOT_TOKEN || '';
   }
-  if (env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN) {
-    cfg.notifications.telegram.botToken = env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN;
+  if (env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID || env.TELEGRAM_CHAT_ID) {
+    cfg.notifications.telegram.chatId =
+      env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID || env.TELEGRAM_CHAT_ID || '';
   }
-  if (env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID) {
-    cfg.notifications.telegram.chatId = env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID;
+  if (env.STREAK_NOTIFICATIONS__TELEGRAM__ENABLED !== undefined || env.TELEGRAM_ENABLED !== undefined) {
+    const val = env.STREAK_NOTIFICATIONS__TELEGRAM__ENABLED ?? env.TELEGRAM_ENABLED;
+    cfg.notifications.telegram.enabled = val === 'true';
+  } else if (cfg.notifications.telegram.botToken && cfg.notifications.telegram.chatId) {
+    // Automatically enable Telegram if both bot token and chatId are provided
+    cfg.notifications.telegram.enabled = true;
   }
 
-  if (env.STREAK_NOTIFICATIONS__DISCORD__ENABLED !== undefined) {
-    cfg.notifications.discord.enabled = env.STREAK_NOTIFICATIONS__DISCORD__ENABLED === 'true';
+  if (env.STREAK_NOTIFICATIONS__DISCORD__WEBHOOK_URL || env.DISCORD_WEBHOOK_URL) {
+    cfg.notifications.discord.webhookUrl =
+      env.STREAK_NOTIFICATIONS__DISCORD__WEBHOOK_URL || env.DISCORD_WEBHOOK_URL || '';
   }
-  if (env.STREAK_NOTIFICATIONS__DISCORD__WEBHOOK_URL) {
-    cfg.notifications.discord.webhookUrl = env.STREAK_NOTIFICATIONS__DISCORD__WEBHOOK_URL;
+  if (env.STREAK_NOTIFICATIONS__DISCORD__ENABLED !== undefined || env.DISCORD_ENABLED !== undefined) {
+    const val = env.STREAK_NOTIFICATIONS__DISCORD__ENABLED ?? env.DISCORD_ENABLED;
+    cfg.notifications.discord.enabled = val === 'true';
+  } else if (cfg.notifications.discord.webhookUrl) {
+    // Automatically enable Discord if webhookUrl is provided
+    cfg.notifications.discord.enabled = true;
   }
 
   if (env.STREAK_DATABASE__PATH) {
