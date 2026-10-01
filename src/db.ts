@@ -205,6 +205,11 @@ export function getAllInteractedCommentTexts(db: DatabaseInstance): string[] {
   return rows.map((r) => r.comment_text);
 }
 
+export function hasRunInteracted(db: DatabaseInstance, runId: string, actionType: ActionType): boolean {
+  const stmt = db.prepare(`SELECT 1 FROM interactions WHERE run_id = ? AND action_type = ? LIMIT 1`);
+  return stmt.get(runId, actionType) !== undefined;
+}
+
 export function insertEvent(db: DatabaseInstance, event: Event): number {
   const stmt = db.prepare(`
     INSERT INTO events (

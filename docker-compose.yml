@@ -12,6 +12,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./config.json:/app/config.json:ro
+      - ./dist:/app/dist
     environment:
       - NODE_ENV=production
     command: ["scheduler:start"]
@@ -30,6 +31,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./config.json:/app/config.json:ro
+      - ./dist:/app/dist
     environment:
       - NODE_ENV=development
       - TAILSCALE_IP=${TAILSCALE_IP:-}
@@ -50,6 +52,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./config.json:/app/config.json:ro
+      - ./dist:/app/dist
     environment:
       - NODE_ENV=development
       - TAILSCALE_IP=${TAILSCALE_IP:-}

@@ -5,10 +5,18 @@ import type { DatabaseInstance } from './db.js';
 import {
   getInteractedPostIds,
   getAllInteractedCommentTexts,
+  hasRunInteracted,
   insertInteraction,
 } from './db.js';
 import type { CommentGenerator } from './comment-generator.js';
 import { humanClick, humanScroll, humanScrollToBottom, humanType, randomDelay } from './human-behavior.js';
+import { isValidCommunityArticle, extractPostIdFromUrl } from './article-filter.js';
+
+interface CandidateArticle {
+  id: string;
+  url: string;
+  title: string;
+}
 
 export async function executeComment(
   page: Page,
@@ -21,6 +29,19 @@ export async function executeComment(
   emitter.stepStarted('comment');
 
   try {
+    // Strict guard: ensure we never comment more than once per run
+    if (hasRunInteracted(db, runId, 'comment')) {
+      process.stdout.write(`[COMMENT] Comment already submitted in run ${runId}. Skipping duplicate comment.\n`);
+      const durationMs = Date.now() - startTime;
+      emitter.stepCompleted('comment', durationMs, { skipped: true, reason: 'already_commented_in_run' });
+      return {
+        name: 'comment',
+        status: 'completed',
+        durationMs,
+        retryCount: 0,
+      };
+    }
+
     const alreadyCommentedIds = new Set(getInteractedPostIds(db, 'comment'));
     const pastCommentTexts = new Set(getAllInteractedCommentTexts(db));
 
@@ -32,241 +53,324 @@ export async function executeComment(
     await humanScroll(page);
     await randomDelay(1000, 2000);
 
-    // Find an article link that hasn't been commented on
-    const links = await page.$$('a[href*="/post/"], a[href*="/article/"], a[href*="/content/"]');
-    let targetLink = null;
-    let targetPostId: string | null = null;
-    let targetUrl: string | null = null;
-    let targetTitle: string = 'AWS Builder Community Article';
+    // Helper to extract valid candidate articles from current page
+    const collectCandidates = async (): Promise<CandidateArticle[]> => {
+      const candidates: CandidateArticle[] = [];
+      const seenIds = new Set<string>();
 
-    for (const link of links) {
-      const href = await link.getAttribute('href');
-      if (!href) continue;
+      const links = await page.$$(
+        'a[href*="/post/"], a[href*="/article/"], a[href*="/content/"], article a, [data-testid*="post"] a, [data-testid*="card"] a'
+      );
 
-      const fullUrl = href.startsWith('http') ? href : `https://builder.aws.com${href}`;
-      const match = href.match(/\/(?:post|article|content)\/([a-zA-Z0-9_-]+)/);
-      const postId = match ? match[1] : href;
+      for (const link of links) {
+        const href = await link.getAttribute('href');
+        if (!href) continue;
 
-      if (!alreadyCommentedIds.has(postId)) {
-        targetLink = link;
-        targetPostId = postId;
-        targetUrl = fullUrl;
+        const fullUrl = href.startsWith('http') ? href : `https://builder.aws.com${href}`;
+        const postId = extractPostIdFromUrl(href) || href;
+
+        if (seenIds.has(postId) || alreadyCommentedIds.has(postId)) {
+          continue;
+        }
+
+        let linkTitle = 'AWS Builder Community Article';
         const text = await link.textContent();
         if (text && text.trim().length > 3) {
-          targetTitle = text.trim();
+          linkTitle = text.trim();
         }
-        break;
+
+        // Validate that this is a real community article (not preview, terms, create, etc.)
+        if (!isValidCommunityArticle(fullUrl, linkTitle)) {
+          continue;
+        }
+
+        seenIds.add(postId);
+        candidates.push({
+          id: postId,
+          url: fullUrl,
+          title: linkTitle,
+        });
+
+        if (candidates.length >= 10) break;
+      }
+
+      return candidates;
+    };
+
+    let candidates = await collectCandidates();
+
+    // If fewer than 3 candidates found on initial view, scroll down to load more cards
+    if (candidates.length < 3) {
+      for (let i = 0; i < 3; i++) {
+        await humanScroll(page);
+        await randomDelay(1200, 2500);
+        candidates = await collectCandidates();
+        if (candidates.length >= 5) break;
       }
     }
 
-    if (!targetPostId || !targetUrl) {
-      throw new Error('No uncommented articles available in current feed');
+    // If still few candidates, navigate to explore page to gather fresh articles
+    if (candidates.length < 2 && !page.url().includes('/explore')) {
+      process.stdout.write(`[COMMENT] Few candidates on home feed (${candidates.length}). Exploring /explore...\n`);
+      await page.goto('https://builder.aws.com/explore', { waitUntil: 'domcontentloaded' }).catch(() => {});
+      await randomDelay(1500, 3000);
+      await humanScroll(page);
+      candidates = await collectCandidates();
     }
 
-    // Navigate to article page
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await randomDelay(1500, 3000);
-
-    // Extract title and preview text for LLM context (do this before scrolling down)
-    const headingEl = await page.$('h1, [data-testid*="post-title"], [data-testid*="article-title"]');
-    if (headingEl) {
-      const titleText = await headingEl.textContent();
-      if (titleText) targetTitle = titleText.trim();
+    if (candidates.length === 0) {
+      throw new Error('No uncommented community articles available in feed or explore');
     }
 
-    let previewText = '';
-    const bodyParagraphs = await page.$$('article p, main p, div[class*="content"] p');
-    for (const p of bodyParagraphs.slice(0, 3)) {
-      const pText = await p.textContent();
-      if (pText) previewText += ` ${pText.trim()}`;
-    }
+    process.stdout.write(`[COMMENT] Found ${candidates.length} candidate community article(s) to explore.\n`);
 
-    // Read through the article naturally (light scroll at the top)
-    await humanScroll(page);
-    await randomDelay(2000, 4000);
-
-    // Scroll all the way to the bottom where the comment section lives.
-    // On AWS Builder Center, the comment area is typically far below the article content.
-    await humanScrollToBottom(page);
-    await randomDelay(1500, 3000);
-
-    // Generate unique comment
-    let commentText = await commentGenerator.generate({
-      title: targetTitle,
-      preview: previewText.slice(0, 600),
-    });
-
-    // Guard against duplicate comments across the 90-day streak
-    let attempts = 0;
-    while (pastCommentTexts.has(commentText) && attempts < 3) {
-      attempts++;
-      commentText = await commentGenerator.generate({
-        title: targetTitle,
-        preview: previewText.slice(0, 600),
-      });
-    }
-
-    // Locate comment input box (textarea, contenteditable, or input)
     const commentInputSelectors = [
       'textarea[placeholder*="comment" i]',
       'textarea[placeholder*="thoughts" i]',
       'textarea[placeholder*="reply" i]',
       'textarea[placeholder*="write" i]',
       'textarea[placeholder*="say" i]',
+      'textarea[placeholder*="add" i]',
+      'textarea[placeholder*="share" i]',
+      'textarea[name*="comment" i]',
+      'textarea[id*="comment" i]',
+      'div[role="textbox"]',
       'div[contenteditable="true"]',
       '[data-testid*="comment-input"]',
       '[data-testid*="comment-box"]',
       '[data-testid*="comment-field"]',
+      '[data-testid*="comment-textarea"]',
+      'div[class*="comment" i] textarea',
+      'div[class*="comment" i] [contenteditable="true"]',
+      'div[class*="comment" i] div[role="textbox"]',
+      'section[class*="comment" i] textarea',
+      'section[class*="comment" i] [contenteditable="true"]',
+      'section[class*="comment" i] div[role="textbox"]',
       'textarea',
     ];
 
-    // First pass: look for already-visible comment input
-    let foundSelector: string | null = null;
-    for (const sel of commentInputSelectors) {
-      const el = await page.$(sel);
-      if (el) {
-        // Scroll the element into view in case it's just barely off-screen
-        await el.scrollIntoViewIfNeeded().catch(() => {});
-        await randomDelay(300, 600);
-        if (await el.isVisible().catch(() => false)) {
-          foundSelector = sel;
-          break;
-        }
-      }
-    }
+    const openCommentSelectors = [
+      'button:has-text("Comment")',
+      'button:has-text("Comments")',
+      'button:has-text("Add a comment")',
+      'button:has-text("Write a comment")',
+      'button:has-text("Leave a comment")',
+      'button:has-text("Reply")',
+      'button:has-text("Join the discussion")',
+      'a:has-text("Comment")',
+      'a:has-text("Comments")',
+      'button[aria-label*="comment" i]',
+      'button[aria-label*="reply" i]',
+      '[data-testid*="open-comment"]',
+      '[data-testid*="add-comment"]',
+      '[data-testid*="comment-button"]',
+      'div[class*="comment-placeholder"]',
+      'div[class*="comment-trigger"]',
+    ];
 
-    // Second pass: look for a button/link to open/expand the comment section
-    if (!foundSelector) {
-      const openCommentSelectors = [
-        'button:has-text("Comment")',
-        'button:has-text("Add a comment")',
-        'button:has-text("Write a comment")',
-        'button:has-text("Leave a comment")',
-        'button:has-text("Reply")',
-        'a:has-text("Comment")',
-        'button[aria-label*="comment" i]',
-        '[data-testid*="open-comment"]',
-        '[data-testid*="add-comment"]',
-        '[data-testid*="comment-button"]',
-      ];
+    const submitSelectors = [
+      'button:has-text("Comment")',
+      'button[type="submit"]:has-text("Comment")',
+      'button:has-text("Post")',
+      'button[type="submit"]:has-text("Post")',
+      'button:has-text("Submit")',
+      'button[type="submit"]:has-text("Submit")',
+      'button:has-text("Publish")',
+      'button:has-text("Send")',
+      'button[aria-label*="submit" i]',
+      'button[aria-label*="comment" i]',
+      'button[aria-label*="post" i]',
+      '[data-testid*="submit-comment"]',
+      '[data-testid*="post-comment"]',
+      '[data-testid*="comment-submit"]',
+    ];
 
-      for (const sel of openCommentSelectors) {
-        try {
-          const btn = await page.$(sel);
-          if (btn) {
-            await btn.scrollIntoViewIfNeeded().catch(() => {});
-            await randomDelay(300, 500);
-            if (await btn.isVisible().catch(() => false)) {
-              await humanClick(page, sel);
-              await randomDelay(1500, 3000);
-              // Re-check for comment input after clicking
-              for (const inputSel of commentInputSelectors) {
-                const el = await page.$(inputSel);
-                if (el) {
-                  await el.scrollIntoViewIfNeeded().catch(() => {});
-                  await randomDelay(300, 500);
-                  if (await el.isVisible().catch(() => false)) {
-                    foundSelector = inputSel;
-                    break;
-                  }
-                }
-              }
-              if (foundSelector) break;
-            }
-          }
-        } catch {
+    let lastError: Error | null = null;
+    const maxAttempts = Math.min(candidates.length, 6);
+
+    for (let i = 0; i < maxAttempts; i++) {
+      const candidate = candidates[i];
+      process.stdout.write(
+        `[COMMENT] Evaluating candidate ${i + 1}/${maxAttempts}: "${candidate.title}" (${candidate.url})\n`
+      );
+
+      try {
+        await page.goto(candidate.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await randomDelay(1500, 3000);
+
+        // Guard against redirects to login or non-article pages
+        const currentUrl = page.url();
+        if (!isValidCommunityArticle(currentUrl)) {
+          process.stdout.write(`[COMMENT] Candidate redirected to invalid path: ${currentUrl}. Trying next candidate article...\n`);
           continue;
         }
-      }
-    }
 
-    // Third pass: scroll to absolute bottom again and try one more time
-    if (!foundSelector) {
-      await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
-      await randomDelay(2000, 4000);
+        // Check for sign-in prompt indicating unauthenticated view
+        const signInPrompt = await page.$(
+          'button:has-text("Sign in"), a[href*="signin"], [data-testid*="signin"], button:has-text("Log in")'
+        );
+        if (signInPrompt && (await signInPrompt.isVisible().catch(() => false))) {
+          process.stdout.write(`[COMMENT] Sign-in prompt displayed on ${candidate.url}. Trying next candidate article...\n`);
+          continue;
+        }
 
-      for (const sel of commentInputSelectors) {
-        const el = await page.$(sel);
-        if (el) {
-          await el.scrollIntoViewIfNeeded().catch(() => {});
-          await randomDelay(300, 600);
-          if (await el.isVisible().catch(() => false)) {
-            foundSelector = sel;
+        // Extract title and preview text for LLM context
+        let articleTitle = candidate.title;
+        const headingEl = await page.$('h1, [data-testid*="post-title"], [data-testid*="article-title"]');
+        if (headingEl) {
+          const titleText = await headingEl.textContent();
+          if (titleText && titleText.trim().length > 3) articleTitle = titleText.trim();
+        }
+
+        let previewText = '';
+        const bodyParagraphs = await page.$$('article p, main p, div[class*="content"] p');
+        for (const p of bodyParagraphs.slice(0, 3)) {
+          const pText = await p.textContent();
+          if (pText) previewText += ` ${pText.trim()}`;
+        }
+
+        // Read through article naturally
+        await humanScroll(page);
+        await randomDelay(1500, 3000);
+
+        // Scroll down to comments area
+        await humanScrollToBottom(page);
+        await randomDelay(1500, 2500);
+
+        // Check for visible comment input
+        let foundSelector: string | null = null;
+        for (const sel of commentInputSelectors) {
+          const el = await page.$(sel);
+          if (el) {
+            await el.scrollIntoViewIfNeeded().catch(() => {});
+            await randomDelay(200, 400);
+            if (await el.isVisible().catch(() => false)) {
+              foundSelector = sel;
+              break;
+            }
+          }
+        }
+
+        // If not found, attempt clicking open/expand comment triggers
+        if (!foundSelector) {
+          for (const sel of openCommentSelectors) {
+            try {
+              const btn = await page.$(sel);
+              if (btn && (await btn.isVisible().catch(() => false))) {
+                await btn.scrollIntoViewIfNeeded().catch(() => {});
+                await humanClick(page, sel);
+                await randomDelay(1500, 2500);
+                break;
+              }
+            } catch {
+              continue;
+            }
+          }
+
+          // Re-check input selectors after expanding
+          for (const inputSel of commentInputSelectors) {
+            const el = await page.$(inputSel);
+            if (el) {
+              await el.scrollIntoViewIfNeeded().catch(() => {});
+              await randomDelay(200, 400);
+              if (await el.isVisible().catch(() => false)) {
+                foundSelector = inputSel;
+                break;
+              }
+            }
+          }
+        }
+
+        // If still no comment input on this article, move to next candidate
+        if (!foundSelector) {
+          process.stdout.write(
+            `[COMMENT] Comment input field not found on ${candidate.url}. Trying next candidate article...\n`
+          );
+          continue;
+        }
+
+        // Generate unique comment
+        let commentText = await commentGenerator.generate({
+          title: articleTitle,
+          preview: previewText.slice(0, 600),
+        });
+
+        let attempts = 0;
+        while (pastCommentTexts.has(commentText) && attempts < 3) {
+          attempts++;
+          commentText = await commentGenerator.generate({
+            title: articleTitle,
+            preview: previewText.slice(0, 600),
+          });
+        }
+
+        // Type comment with human-like keystroke intervals
+        await humanType(page, foundSelector, commentText);
+        await randomDelay(1000, 2500);
+
+        // Locate submit button
+        let submitSelector: string | null = null;
+        for (const sel of submitSelectors) {
+          const el = await page.$(sel);
+          if (el && (await el.isVisible().catch(() => false))) {
+            submitSelector = sel;
             break;
           }
         }
-      }
-    }
 
-    if (!foundSelector) {
-      // Check if user is unauthenticated on this page
-      const signInPrompt = await page.$(
-        'button:has-text("Sign in"), a[href*="signin"], [data-testid*="signin"], button:has-text("Log in"), a:has-text("Sign in")'
-      );
-      if (signInPrompt && (await signInPrompt.isVisible().catch(() => false))) {
-        throw new Error(
-          'Authentication required: "Sign in" prompt detected on article page. Please authenticate via "pnpm run auth".'
+        if (!submitSelector) {
+          process.stdout.write(
+            `[COMMENT] Submit button not found on ${candidate.url}. Trying next candidate article...\n`
+          );
+          continue;
+        }
+
+        await humanClick(page, submitSelector);
+        await randomDelay(3000, 5000);
+
+        // Persist interaction to SQLite
+        insertInteraction(db, {
+          run_id: runId,
+          post_id: candidate.id,
+          post_url: candidate.url,
+          post_title: articleTitle,
+          action_type: 'comment',
+          comment_text: commentText,
+          created_at: new Date().toISOString(),
+        });
+
+        const durationMs = Date.now() - startTime;
+        process.stdout.write(
+          `[COMMENT] ✅ Successfully commented on "${articleTitle}" (${candidate.id})\n`
         );
-      }
-      throw new Error('Comment input field could not be found on page');
-    }
+        emitter.stepCompleted('comment', durationMs, {
+          postId: candidate.id,
+          postTitle: articleTitle,
+          commentText,
+          url: candidate.url,
+        });
 
-    // Type comment with human-like delays
-    await humanType(page, foundSelector, commentText);
-    await randomDelay(1000, 2500);
-
-    // Locate submit button
-    const submitSelectors = [
-      'button[type="submit"]:has-text("Comment")',
-      'button:has-text("Post")',
-      'button:has-text("Submit")',
-      'button:has-text("Send")',
-      'button[aria-label*="submit" i]',
-      '[data-testid*="submit-comment"]',
-    ];
-
-    let submitSelector: string | null = null;
-    for (const sel of submitSelectors) {
-      const el = await page.$(sel);
-      if (el && (await el.isVisible().catch(() => false))) {
-        submitSelector = sel;
-        break;
+        return {
+          name: 'comment',
+          status: 'completed',
+          durationMs,
+          retryCount: i,
+          resultData: { postId: candidate.id, postTitle: articleTitle, commentText },
+        };
+      } catch (candidateErr: any) {
+        process.stderr.write(
+          `[COMMENT] Error attempting candidate ${candidate.url}: ${candidateErr.message}\n`
+        );
+        lastError = candidateErr;
+        continue;
       }
     }
 
-    if (!submitSelector) {
-      throw new Error('Comment submit button could not be found');
-    }
-
-    await humanClick(page, submitSelector);
-    await randomDelay(2500, 5000);
-
-    // Persist interaction to SQLite
-    insertInteraction(db, {
-      run_id: runId,
-      post_id: targetPostId,
-      post_url: targetUrl,
-      post_title: targetTitle,
-      action_type: 'comment',
-      comment_text: commentText,
-      created_at: new Date().toISOString(),
-    });
-
-    const durationMs = Date.now() - startTime;
-    emitter.stepCompleted('comment', durationMs, {
-      postId: targetPostId,
-      postTitle: targetTitle,
-      commentText,
-      url: targetUrl,
-    });
-
-    return {
-      name: 'comment',
-      status: 'completed',
-      durationMs,
-      retryCount: 0,
-      resultData: { postId: targetPostId, postTitle: targetTitle, commentText },
-    };
+    throw new Error(
+      lastError
+        ? `Could not submit a comment on any explored community articles: ${lastError.message}`
+        : 'Could not submit a comment on any explored community articles'
+    );
   } catch (err: any) {
     const durationMs = Date.now() - startTime;
     emitter.stepFailed('comment', durationMs, 'retryable', err.message, 0);

@@ -11,6 +11,7 @@ import {
   getStepsByRunId,
   getEventsByRunId,
   getTodayCompletedRun,
+  hasRunInteracted,
 } from '../../src/db.js';
 import type { DatabaseInstance } from '../../src/db.js';
 
@@ -206,6 +207,56 @@ describe('SQLite Database Layer', () => {
 
     expect(getInteractedPostIds(db, 'like')).toContain('post-456');
     expect(getInteractedPostIds(db, 'comment')).toContain('post-456');
+  });
+
+  it('should accurately report hasRunInteracted for distinct action types', () => {
+    const runId = 'test-run-interact';
+    insertRun(db, {
+      run_id: runId,
+      scheduled_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      duration_ms: null,
+      status: 'running',
+      streak_visit_before: 0,
+      streak_like_before: 0,
+      streak_comment_before: 0,
+      streak_visit_after: null,
+      streak_like_after: null,
+      streak_comment_after: null,
+      error_message: null,
+      error_stack: null,
+    });
+
+    expect(hasRunInteracted(db, runId, 'like')).toBe(false);
+    expect(hasRunInteracted(db, runId, 'comment')).toBe(false);
+
+    insertInteraction(db, {
+      run_id: runId,
+      post_id: 'post-111',
+      post_url: 'https://builder.aws.com/content/post-111',
+      post_title: 'Title',
+      action_type: 'like',
+      comment_text: null,
+      created_at: new Date().toISOString(),
+    });
+
+    expect(hasRunInteracted(db, runId, 'like')).toBe(true);
+    expect(hasRunInteracted(db, runId, 'comment')).toBe(false);
+
+    insertInteraction(db, {
+      run_id: runId,
+      post_id: 'post-222',
+      post_url: 'https://builder.aws.com/content/post-222',
+      post_title: 'Title 2',
+      action_type: 'comment',
+      comment_text: 'Nice post!',
+      created_at: new Date().toISOString(),
+    });
+
+    expect(hasRunInteracted(db, runId, 'like')).toBe(true);
+    expect(hasRunInteracted(db, runId, 'comment')).toBe(true);
+    expect(hasRunInteracted(db, 'other-run', 'like')).toBe(false);
   });
 
   it('should insert and query append-only events', () => {
