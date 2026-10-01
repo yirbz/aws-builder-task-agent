@@ -294,7 +294,8 @@ Any setting in `config.json` can be overridden via environment variables prefixe
 | `STREAK_SCHEDULE__WINDOW_START` | `schedule.windowStart` | `14:30` |
 | `STREAK_SCHEDULE__WINDOW_MINUTES` | `schedule.windowMinutes` | `60` |
 | `STREAK_SCHEDULE__TIMEZONE` | `schedule.timezone` | `America/New_York` |
-| `STREAK_COMMENTS__GEMINI_API_KEY` | `comments.geminiApiKey` | `AIza...` |
+| `STREAK_COMMENTS__GEMINI_API_KEY` (or `GEMINI_API_KEY`) | `comments.geminiApiKey` | `AIza...` |
+| `STREAK_COMMENTS__GEMINI_MODEL` (or `GEMINI_MODEL`) | `comments.geminiModel` | `gemini-2.0-flash` or `gemini-2.5-flash` |
 | `STREAK_NOTIFICATIONS__TELEGRAM__ENABLED` | `notifications.telegram.enabled` | `true` |
 | `STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN` | `notifications.telegram.botToken` | `123:ABC` |
 | `STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID` | `notifications.telegram.chatId` | `12345` |

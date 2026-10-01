@@ -143,11 +143,11 @@ export function applyEnvOverrides(config: Config): Config {
   if (env.STREAK_COMMENTS__PROVIDER) {
     cfg.comments.provider = env.STREAK_COMMENTS__PROVIDER as any;
   }
-  if (env.STREAK_COMMENTS__GEMINI_API_KEY) {
-    cfg.comments.geminiApiKey = env.STREAK_COMMENTS__GEMINI_API_KEY;
+  if (env.STREAK_COMMENTS__GEMINI_API_KEY || env.GEMINI_API_KEY) {
+    cfg.comments.geminiApiKey = env.STREAK_COMMENTS__GEMINI_API_KEY || env.GEMINI_API_KEY || '';
   }
-  if (env.STREAK_COMMENTS__GEMINI_MODEL) {
-    cfg.comments.geminiModel = env.STREAK_COMMENTS__GEMINI_MODEL;
+  if (env.STREAK_COMMENTS__GEMINI_MODEL || env.GEMINI_MODEL) {
+    cfg.comments.geminiModel = env.STREAK_COMMENTS__GEMINI_MODEL || env.GEMINI_MODEL || '';
   }
   if (env.STREAK_COMMENTS__OLLAMA_BASE_URL) {
     cfg.comments.ollamaBaseUrl = env.STREAK_COMMENTS__OLLAMA_BASE_URL;

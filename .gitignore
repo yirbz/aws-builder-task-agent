@@ -17,6 +17,9 @@ data/.scheduler.lock
 # Environment & config with secrets
 *.env
 *.env.*
+.env
+.env.*
+!.env.example
 config.json
 
 # Logs

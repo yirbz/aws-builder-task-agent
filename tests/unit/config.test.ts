@@ -56,6 +56,18 @@ describe('Configuration Module', () => {
     delete process.env.STREAK_COMMENTS__PROVIDER;
   });
 
+  it('should override gemini model from STREAK_COMMENTS__GEMINI_MODEL or GEMINI_MODEL', () => {
+    process.env.STREAK_COMMENTS__GEMINI_MODEL = 'gemini-2.5-flash';
+    let overridden = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(overridden.comments.geminiModel).toBe('gemini-2.5-flash');
+    delete process.env.STREAK_COMMENTS__GEMINI_MODEL;
+
+    process.env.GEMINI_MODEL = 'gemini-1.5-pro';
+    overridden = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(overridden.comments.geminiModel).toBe('gemini-1.5-pro');
+    delete process.env.GEMINI_MODEL;
+  });
+
   it('should gracefully handle configPath being a directory without throwing EISDIR', () => {
     // Pass an existing directory, e.g. ./tests
     const config = loadConfig('./tests');
