@@ -39,6 +39,10 @@ export const DEFAULT_CONFIG: Config = {
     baseDelayMs: 2000,
     maxDelayMs: 30000,
   },
+  metrics: {
+    enabled: true,
+    port: 9091,
+  },
 };
 
 function deepMerge<T extends Record<string, any>>(target: T, source: Partial<T>): T {
@@ -199,6 +203,15 @@ export function applyEnvOverrides(config: Config): Config {
   }
   if (env.STREAK_RETRY__MAX_DELAY_MS) {
     cfg.retry.maxDelayMs = Number.parseInt(env.STREAK_RETRY__MAX_DELAY_MS, 10);
+  }
+
+  if (env.STREAK_METRICS__PORT) {
+    if (!cfg.metrics) cfg.metrics = { enabled: true, port: 9091 };
+    cfg.metrics.port = Number.parseInt(env.STREAK_METRICS__PORT, 10);
+  }
+  if (env.STREAK_METRICS__ENABLED !== undefined) {
+    if (!cfg.metrics) cfg.metrics = { enabled: true, port: 9091 };
+    cfg.metrics.enabled = env.STREAK_METRICS__ENABLED === 'true';
   }
 
   return cfg;

@@ -171,6 +171,11 @@ export interface RetryConfig {
   maxDelayMs: number;
 }
 
+export interface MetricsConfig {
+  enabled: boolean;
+  port: number;
+}
+
 export interface Config {
   schedule: ScheduleConfig;
   browser: BrowserConfig;
@@ -178,4 +183,5 @@ export interface Config {
   notifications: NotificationsConfig;
   database: DatabaseConfig;
   retry: RetryConfig;
+  metrics?: MetricsConfig;
 }

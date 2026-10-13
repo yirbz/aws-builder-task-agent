@@ -133,6 +133,9 @@ fi
 
 # 3. Automated streak execution (headful Chromium under virtual Xvfb display)
 if [ "$COMMAND" = "run" ] || [ "$COMMAND" = "scheduler:start" ]; then
+  if [ "$COMMAND" = "scheduler:start" ]; then
+    rm -f /app/data/.scheduler.lock
+  fi
   start_display
   export DISPLAY=:99
   node dist/index.js "$@"

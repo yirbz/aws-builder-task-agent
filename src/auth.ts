@@ -180,6 +180,8 @@ export async function verifyAuthentication(
       '[data-testid="header-user-menu"]',
       'a[href*="/profile/"]',
       'button[aria-label*="User menu" i]',
+      'button:has-text("Invite builders")',
+      'header button:has-text("Invite builders")',
     ];
 
     for (const sel of avatarSelectors) {
@@ -279,8 +281,35 @@ export async function autoLogin(
       timeout: 30000,
     });
 
-    // Wait for the sign-in page to load (could be profile.aws.amazon.com or similar)
+    // Wait for the page to load
     await page.waitForTimeout(3000);
+
+    // If on builder.aws.com and not yet on the AWS Builder ID sign-in portal, click "Sign in"
+    if (
+      !page.url().includes('profile.aws.amazon.com') &&
+      !page.url().includes('signin') &&
+      !page.url().includes('authPortalURL')
+    ) {
+      const signInBtns = await page.$$(
+        'button[aria-label*="Sign in" i], button:has-text("Sign in"), a[href*="signin"], a:has-text("Sign in"), button:has-text("Log in"), button[aria-label*="Log in" i]'
+      );
+      for (const btn of signInBtns) {
+        if (await btn.isVisible().catch(() => false)) {
+          process.stdout.write(`[AUTO-LOGIN] Clicking "Sign in" button to reach AWS Builder ID portal...\n`);
+          await btn.click().catch(() => {});
+          await page.waitForTimeout(4000);
+          break;
+        }
+      }
+    }
+
+    // Wait for the sign-in form to appear
+    try {
+      await page.waitForSelector(
+        'input[type="email"], input[name="email"], input[id*="email" i], input[placeholder*="email" i], input[name="username"], input[id*="username" i]',
+        { timeout: 10000 }
+      );
+    } catch {}
 
     // Step 1: Find and fill the email field
     const emailSelectors = [
@@ -328,7 +357,7 @@ export async function autoLogin(
       return false;
     }
 
-    // Click "Next" / "Continue" / "Sign in" button after email
+    // Click "Next" / "Continue" / "Sign in" button after email, or submit via Enter
     const nextBtnSelectors = [
       'button[type="submit"]',
       'input[type="submit"]',
@@ -338,11 +367,14 @@ export async function autoLogin(
       'button:has-text("Log in")',
     ];
 
+    let nextClicked = false;
     for (const sel of nextBtnSelectors) {
       try {
         const btn = await page.$(sel);
         if (btn && (await btn.isVisible().catch(() => false))) {
+          process.stdout.write(`[AUTO-LOGIN] Clicking "${sel}"...\n`);
           await btn.click();
+          nextClicked = true;
           break;
         }
       } catch {
@@ -350,8 +382,49 @@ export async function autoLogin(
       }
     }
 
-    // Wait for password field to appear
-    await page.waitForTimeout(3000);
+    if (!nextClicked) {
+      process.stdout.write(`[AUTO-LOGIN] Submitting email via Enter key...\n`);
+      await page.keyboard.press('Enter');
+    }
+
+    // Wait for password field to appear OR trusted-device immediate redirect
+    process.stdout.write(`[AUTO-LOGIN] Waiting for password field or trusted-device redirect...\n`);
+    const checkRedirectStart = Date.now();
+    let hasPasswordField = false;
+
+    while (Date.now() - checkRedirectStart < 15000) {
+      // Check if AWS skipped password (trusted device) and redirected back to Builder Center
+      if (page.url().includes('builder.aws.com') && !page.url().includes('signin')) {
+        await page.waitForTimeout(3000);
+        const isAuth = await verifyAuthentication(page, false);
+        if (isAuth) {
+          process.stdout.write(`[AUTO-LOGIN] ✅ Device already trusted! Instant re-authentication without password.\n`);
+          await persistSession(page.context(), profileDir);
+          return true;
+        }
+      }
+
+      const pwField = await page.$(
+        'input[type="password"], input[name="password"], input[id*="password" i], input[placeholder*="password" i]'
+      );
+      if (pwField && (await pwField.isVisible().catch(() => false))) {
+        hasPasswordField = true;
+        break;
+      }
+      await page.waitForTimeout(1000);
+    }
+
+    if (!hasPasswordField) {
+      // Final check if redirected to authenticated state
+      const isAuth = await verifyAuthentication(page, false);
+      if (isAuth) {
+        process.stdout.write(`[AUTO-LOGIN] ✅ Device trusted! Re-authentication confirmed.\n`);
+        await persistSession(page.context(), profileDir);
+        return true;
+      }
+      process.stderr.write(`[AUTO-LOGIN] Could not find password input field.\n`);
+      return false;
+    }
 
     // Step 2: Find and fill the password field
     const passwordSelectors = [

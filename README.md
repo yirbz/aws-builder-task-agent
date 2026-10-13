@@ -1,12 +1,16 @@
 # AWS Builder Streak Agent 🚀
 
 [![Docker](https://img.shields.io/badge/Docker-First-2496ED.svg?logo=docker&logoColor=white)](docker-compose.yml)
+[![Prometheus](https://img.shields.io/badge/Prometheus-Observed-E6522C.svg?logo=prometheus&logoColor=white)](prometheus/prometheus.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18.0.0-green.svg)](https://nodejs.org/)
 [![pnpm](https://img.shields.io/badge/pnpm-%3E%3D10.0.0-orange.svg)](https://pnpm.io/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An autonomous, stealth interaction agent designed to maintain daily streaks on **AWS Builder Center** (`builder.aws.com`) for 90 consecutive days without triggering anti-bot detection.
+
+> 📖 **Engineering Case Study Available:**  
+> Read the complete deep-dive on surviving homelab electricity blackouts, deterministic UTC state machines, and real-time Prometheus monitoring in [**CASE_STUDY.md**](CASE_STUDY.md).
 
 Specifically targets:
 1. 🌐 **"Visit Builder Center daily for 90 consecutive days"**
@@ -162,16 +166,13 @@ AWS Badge Streak Agent — Status
 
 ---
 
-### 5. Launch the 24/7 Daily Streak Daemon
+### 5. Launch the 24/7 Daily Streak & Prometheus Daemon
 
-Start the containerized background scheduler that wakes up daily with pseudo-random jitter:
+Start the containerized background scheduler alongside Prometheus:
 
 ```bash
-# Using pnpm shortcut:
-pnpm run scheduler:start
-
-# Or directly with Docker Compose:
-docker compose up -d streak-agent
+# Start both streak-agent and prometheus:
+docker compose up -d streak-agent prometheus
 ```
 
 View live logs and execution traces:
@@ -180,10 +181,67 @@ pnpm run scheduler:logs
 # or: docker compose logs -f streak-agent
 ```
 
-To stop the scheduler:
+To stop the services:
 ```bash
-pnpm run scheduler:stop
-# or: docker compose down
+docker compose down
+```
+
+---
+
+### 6. Production Homelab Deployment (Surviving Power Outages via Systemd)
+
+To ensure the service survives power cuts, unexpected reboots, or closed SSH sessions, deploy the included systemd user service file:
+
+```bash
+# 1. Ensure lingering is enabled for your non-root user (persists after logout)
+loginctl enable-linger $USER
+
+# 2. Copy the systemd service file
+mkdir -p ~/.config/systemd/user
+cp aws-builder-streak.service ~/.config/systemd/user/
+
+# 3. Reload systemd and enable service
+systemctl --user daemon-reload
+systemctl --user enable --now aws-builder-streak.service
+
+# 4. Check status & logs
+systemctl --user status aws-builder-streak.service
+journalctl --user -u aws-builder-streak.service -f
+```
+
+---
+
+## 📊 Observability & Metrics (Prometheus)
+
+The streak agent features an embedded, zero-dependency HTTP Prometheus metrics exporter on port `9091` (`GET /metrics`), automatically scraped by Prometheus on port `9090`.
+
+- **Prometheus UI**: `http://localhost:9090` (or `http://<homelab-ip>:9090` / Tailscale `http://100.x.y.z:9090`)
+- **Direct Metrics Endpoint**: `http://localhost:9091/metrics`
+- **Health Check**: `http://localhost:9091/health`
+
+### Key Exposed Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `aws_streak_days{type="..."}` | Gauge | Current streak count (`visit`, `like`, `comment`) |
+| `aws_streak_target_days` | Gauge | Streak milestone goal (default: `90`) |
+| `aws_streak_days_remaining` | Gauge | Days left to complete 90-day milestone |
+| `aws_streak_today_completed` | Gauge | `1` if current UTC 24h cycle is completed, `0` otherwise |
+| `aws_streak_action_completed{action="..."}` | Gauge | Action-level completion status for current UTC cycle |
+| `aws_streak_seconds_until_next_run` | Gauge | Countdown seconds to the next scheduled streak execution |
+| `aws_streak_up` | Gauge | `1` when daemon process is alive and operational |
+| `aws_streak_consecutive_failures` | Gauge | Number of consecutive run failures |
+
+#### Useful PromQL Queries
+```promql
+# Streak days completed by action type
+aws_streak_days
+
+# Check if today's streak is complete (1 = yes, 0 = pending)
+aws_streak_today_completed
+
+# Hours remaining until next execution
+aws_streak_seconds_until_next_run / 3600
 ```
 
 ---
@@ -195,17 +253,17 @@ All commands are mapped in `package.json` for convenience and can also be execut
 | Action | `pnpm` Shortcut | `docker compose` Native Command | Description |
 |---|---|---|---|
 | **Interactive Login** | `pnpm run auth` | `docker compose run --rm --service-ports auth` | Launches noVNC browser on port 6080 for one-time login |
-| **Daily Run (Live)** | `pnpm run streak` | `docker compose run --rm streak-agent run` | Executes today's 5 streak steps |
-| **Trigger Run Now** | `pnpm run streak:force` | `docker compose run --rm streak-agent run --force --verbose` | Forces immediate live execution with full logs |
-| **Watch Run Live** | `pnpm run streak:watch` | `docker compose run --rm --service-ports streak-watch` | Forces live execution while letting you watch in browser at :6080 |
+| **Daily Run (Live)** | `pnpm run streak` | `docker compose run --rm streak-agent run` | Executes today's streak cycle via direct HTTP API |
+| **Trigger Run Now** | `pnpm run streak:force` | `docker compose run --rm streak-agent run --force --verbose` | Forces immediate execution with verbose logs |
+| **Watch Run Live** | `pnpm run streak:watch` | `docker compose run --rm --service-ports streak-watch` | Forces live execution with visual browser view at :6080 |
 | **Dry Run** | `pnpm run streak -- --dry-run` | `docker compose run --rm streak-agent run --dry-run` | Simulates steps without mutating platform |
 | **Force Run** | `pnpm run streak -- --force` | `docker compose run --rm streak-agent run --force` | Bypasses same-day idempotency check |
 | **Check Status** | `pnpm run status` | `docker compose run --rm streak-agent status` | Shows streak counts, next window, and health |
 | **Status (JSON)** | `pnpm run status -- --json` | `docker compose run --rm streak-agent status --json` | Machine-readable health payload |
 | **View History** | `pnpm run history` | `docker compose run --rm streak-agent history` | Displays recent likes and comments log |
-| **Start Daemon** | `pnpm run scheduler:start` | `docker compose up -d streak-agent` | Runs 24/7 background scheduler daemon |
+| **Start Daemon** | `pnpm run scheduler:start` | `docker compose up -d streak-agent prometheus` | Runs 24/7 background scheduler + Prometheus |
 | **View Daemon Logs** | `pnpm run scheduler:logs` | `docker compose logs -f streak-agent` | Follows real-time scheduler output |
-| **Stop Daemon** | `pnpm run scheduler:stop` | `docker compose down` | Stops background scheduler container |
+| **Stop Daemon** | `pnpm run scheduler:stop` | `docker compose down` | Stops background daemon containers |
 
 ---
 

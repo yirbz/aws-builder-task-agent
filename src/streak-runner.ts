@@ -16,6 +16,9 @@ import {
   insertStep,
   getTodayCompletedRun,
   getLatestRun,
+  getLastActionTimestamps,
+  isActionCompletedWithinHours,
+  recordActionTimestamp,
 } from './db.js';
 import { createEventEmitter, type EventEmitter } from './events.js';
 import {
@@ -29,11 +32,17 @@ import {
 import { executeVisit } from './visit.js';
 import { executeLike } from './like.js';
 import { executeComment } from './comment.js';
-import { executeVerify } from './verify.js';
+import { executeVerify, fetchBadgeProgress } from './verify.js';
 import { CommentGenerator } from './comment-generator.js';
 import { withRetry } from './retry.js';
 import { sendNotification } from './notify.js';
 import { randomDelay } from './human-behavior.js';
+import {
+  isCurrentUtcCycleCompleted,
+  recordActionInRegistry,
+  markCycleCompleteInRegistry,
+  getCurrentUtcDateKey,
+} from './registry.js';
 
 export interface RunOptions {
   dryRun?: boolean;
@@ -49,23 +58,28 @@ export async function runDailyStreak(
 ): Promise<ExecutionReport> {
   const { dryRun = false, force = false, singleStep, verbose = false } = options;
 
-  // Idempotency check: Schedule fidelity
+  const previousRun = getLatestRun(db);
+
+  // Idempotency check: Schedule fidelity (Database and Local UTC Registry)
   const todayRun = getTodayCompletedRun(db);
-  if (todayRun && !force) {
+  const cycleAlreadyCompleted = !dryRun && isCurrentUtcCycleCompleted();
+  if ((todayRun || cycleAlreadyCompleted) && !force) {
+    const activeRunId = todayRun?.run_id || 'utc-registry';
     process.stderr.write(
-      `[INFO] Today's streak execution has already completed successfully (Run ID: ${todayRun.run_id}). Skipping.\n`
+      `[INFO] Today's streak execution has already completed successfully for UTC day ${getCurrentUtcDateKey()} (Run ID: ${activeRunId}). Skipping.\n` +
+      `[INFO] To force re-execution, run with --force (e.g. 'pnpm run streak:force' or 'pnpm run streak -- --force').\n`
     );
     return {
-      runId: todayRun.run_id,
+      runId: activeRunId,
       status: 'completed',
-      startedAt: todayRun.started_at,
-      completedAt: todayRun.completed_at ?? undefined,
-      durationMs: todayRun.duration_ms ?? 0,
+      startedAt: todayRun?.started_at || new Date().toISOString(),
+      completedAt: todayRun?.completed_at ?? new Date().toISOString(),
+      durationMs: todayRun?.duration_ms ?? 0,
       steps: [],
       streaks: {
-        visit: todayRun.streak_visit_after ?? 0,
-        like: todayRun.streak_like_after ?? 0,
-        comment: todayRun.streak_comment_after ?? 0,
+        visit: todayRun?.streak_visit_after ?? previousRun?.streak_visit_after ?? 0,
+        like: todayRun?.streak_like_after ?? previousRun?.streak_like_after ?? 0,
+        comment: todayRun?.streak_comment_after ?? previousRun?.streak_comment_after ?? 0,
         target: 90,
       },
     };
@@ -76,7 +90,6 @@ export async function runDailyStreak(
   const startedAt = scheduledAt;
   const startTime = Date.now();
 
-  const previousRun = getLatestRun(db);
   const streakVisitBefore = previousRun?.streak_visit_after ?? previousRun?.streak_visit_before ?? 0;
   const streakLikeBefore = previousRun?.streak_like_after ?? previousRun?.streak_like_before ?? 0;
   const streakCommentBefore = previousRun?.streak_comment_after ?? previousRun?.streak_comment_before ?? 0;
@@ -243,6 +256,15 @@ export async function runDailyStreak(
         result_data: res.resultData ? JSON.stringify(res.resultData) : null,
       });
 
+      if (!dryRun && res.status === 'completed' && (name === 'visit' || name === 'like' || name === 'comment' || name === 'verify')) {
+        recordActionInRegistry(name, {
+          runId,
+          timestamp: new Date().toISOString(),
+          payload: res.resultData,
+          streaks: streaksAfter,
+        });
+      }
+
       stepsResults.push(res);
       return res;
     };
@@ -314,14 +336,70 @@ export async function runDailyStreak(
       await runStep('visit', () => executeVisit(page!, emitter));
     }
 
-    // Step 3: Like
+    // Step 3: Like (performs exactly 1 like on 1 unliked community article per 24h cycle)
     if (!singleStep || singleStep === 'like') {
-      await runStep('like', () => executeLike(page!, db, emitter, runId));
+      const alreadyLikedInCycle = !force && isActionCompletedWithinHours(db, 'like', 20);
+      if (alreadyLikedInCycle) {
+        const lastLikeTime = getLastActionTimestamps(db).like;
+        process.stdout.write(`[LIKE] ✅ Like already completed in current 24h cycle (${lastLikeTime}). Skipping to preserve single-action guarantee.\n`);
+        const skippedRes: StepResult = {
+          name: 'like',
+          status: 'completed',
+          durationMs: 0,
+          retryCount: 0,
+          resultData: { skipped: true, reason: 'already_completed_in_cycle', lastLikedAt: lastLikeTime },
+        };
+        stepsResults.push(skippedRes);
+        insertStep(db, {
+          run_id: runId,
+          step_name: 'like',
+          sequence_number: seqNumber++,
+          status: 'completed',
+          started_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          duration_ms: 0,
+          retry_count: 0,
+          error_type: null,
+          error_message: null,
+          result_data: JSON.stringify(skippedRes.resultData),
+        });
+        emitter.stepCompleted('like', 0, skippedRes.resultData);
+      } else {
+        await runStep('like', () => executeLike(page!, db, emitter, runId));
+      }
     }
 
-    // Step 4: Comment
+    // Step 4: Comment (performs exactly 1 comment on 1 uncommented community article per 24h cycle)
     if (!singleStep || singleStep === 'comment') {
-      await runStep('comment', () => executeComment(page!, db, commentGenerator, emitter, runId));
+      const alreadyCommentedInCycle = !force && isActionCompletedWithinHours(db, 'comment', 20);
+      if (alreadyCommentedInCycle) {
+        const lastCommentTime = getLastActionTimestamps(db).comment;
+        process.stdout.write(`[COMMENT] ✅ Comment already completed in current 24h cycle (${lastCommentTime}). Skipping to preserve single-action guarantee.\n`);
+        const skippedRes: StepResult = {
+          name: 'comment',
+          status: 'completed',
+          durationMs: 0,
+          retryCount: 0,
+          resultData: { skipped: true, reason: 'already_completed_in_cycle', lastCommentedAt: lastCommentTime },
+        };
+        stepsResults.push(skippedRes);
+        insertStep(db, {
+          run_id: runId,
+          step_name: 'comment',
+          sequence_number: seqNumber++,
+          status: 'completed',
+          started_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          duration_ms: 0,
+          retry_count: 0,
+          error_type: null,
+          error_message: null,
+          result_data: JSON.stringify(skippedRes.resultData),
+        });
+        emitter.stepCompleted('comment', 0, skippedRes.resultData);
+      } else {
+        await runStep('comment', () => executeComment(page!, db, commentGenerator, emitter, runId));
+      }
     }
 
     // Step 5: Verify
@@ -342,22 +420,6 @@ export async function runDailyStreak(
         error_message: verifyOutput.result.errorMessage ?? null,
         result_data: JSON.stringify(verifyOutput.streaks),
       });
-    }
-
-    // Partial retry pass for non-critical failures
-    const failedSteps = stepsResults.filter((s) => s.status === 'failed');
-    if (failedSteps.length > 0 && !singleStep) {
-      for (const failed of failedSteps) {
-        if (failed.name === 'like') {
-          process.stderr.write(`[INFO] Retrying previously failed step "like"...\n`);
-          await runStep('like', () => executeLike(page!, db, emitter, runId));
-        } else if (failed.name === 'comment') {
-          process.stderr.write(`[INFO] Retrying previously failed step "comment"...\n`);
-          await runStep('comment', () =>
-            executeComment(page!, db, commentGenerator, emitter, runId)
-          );
-        }
-      }
     }
 
     // Save session back to profile
@@ -423,6 +485,9 @@ export async function runDailyStreak(
   });
 
   if (finalStatus === 'completed') {
+    if (!dryRun) {
+      markCycleCompleteInRegistry(runId, { ...streaksAfter, target: 90 });
+    }
     emitter.taskCompleted(durationMs, streaksAfter);
   } else {
     emitter.taskFailed(durationMs, 'Some steps failed during execution', stepsResults.length - failedSteps.length, failedSteps.length);
