@@ -37,7 +37,7 @@ describe('Notification Formatter', () => {
   it('should format Telegram HTML report with streak counts and step breakdown', () => {
     const html = formatTelegramReport(sampleReport);
     expect(html).toContain('AWS Streak Agent: COMPLETED');
-    expect(html).toContain('42</b> / 90 🔥');
+    expect(html).toContain('42</b> / 60d milestone');
     expect(html).toContain('test-run-uuid-123');
     expect(html).toContain('authenticate</b> (1.2s)');
     expect(html).toContain('comment</b> (14.2s)');

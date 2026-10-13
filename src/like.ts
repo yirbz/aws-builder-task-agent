@@ -3,7 +3,9 @@ import type { StepResult } from './types.js';
 import type { EventEmitter } from './events.js';
 import type { DatabaseInstance } from './db.js';
 import { getInteractedPostIds, insertInteraction } from './db.js';
-import { humanClick, humanScroll, randomDelay } from './human-behavior.js';
+import { humanScroll, randomDelay } from './human-behavior.js';
+import { findCandidateArticles, type ArticleCandidate } from './article-discovery.js';
+import { postLikeApi } from './api-client.js';
 
 export async function executeLike(
   page: Page,
@@ -22,142 +24,118 @@ export async function executeLike(
       await page.goto('https://builder.aws.com', { waitUntil: 'domcontentloaded' });
     }
 
-    await humanScroll(page);
-    await randomDelay(1000, 2500);
-
-    // Scan for article cards and like buttons
-    // Builder Center posts typically contain links with /posts/ or /articles/ or cards with like buttons
-    const articleCards = await page.$$('article, [data-testid*="post-card"], [data-testid*="article-card"], div[class*="PostCard"]');
-
-    let targetCard = null;
-    let targetPostId: string | null = null;
-    let targetTitle: string = 'AWS Builder Content';
-    let targetUrl: string = page.url();
-    let likeButtonSelector: string | null = null;
-
-    for (const card of articleCards) {
-      // Try to extract post id from links or data attributes
-      const linkEl = await card.$('a[href*="/post/"], a[href*="/article/"], a[href*="/content/"]');
-      let postId: string | null = null;
-      let postUrl: string = page.url();
-      let postTitle: string = 'AWS Builder Post';
-
-      if (linkEl) {
-        const href = await linkEl.getAttribute('href');
-        if (href) {
-          postUrl = href.startsWith('http') ? href : `https://builder.aws.com${href}`;
-          const match = href.match(/\/(?:post|article|content)\/([a-zA-Z0-9_-]+)/);
-          postId = match ? match[1] : href;
-        }
-        const text = await linkEl.textContent();
-        if (text) postTitle = text.trim();
-      }
-
-      if (!postId) {
-        // Fallback: check data-post-id or data-id
-        postId = (await card.getAttribute('data-post-id')) || (await card.getAttribute('data-id'));
-      }
-
-      if (!postId) continue;
-
-      // Filter out if already in SQLite interaction history
-      if (alreadyLikedIds.has(postId)) {
-        continue;
-      }
-
-      // Check if like button exists on this card and is unpressed
-      const likeBtn = await card.$(
-        'button[aria-label*="like" i], button[aria-label*="reaction" i], button:has(svg[data-testid*="heart"]), button:has(svg[data-testid*="thumbs"])'
-      );
-
-      if (likeBtn) {
-        const isPressed = await likeBtn.getAttribute('aria-pressed');
-        if (isPressed === 'true') {
-          // Already liked directly on platform
-          continue;
-        }
-
-        targetCard = card;
-        targetPostId = postId;
-        targetTitle = postTitle;
-        targetUrl = postUrl;
-        break;
-      }
+    const candidates = await findCandidateArticles(page, alreadyLikedIds);
+    if (candidates.length === 0) {
+      throw new Error('No unliked articles available after deep feed exploration');
     }
 
-    // Fallback search if structured cards not matching specific container tags
-    if (!targetPostId) {
-      const allLikeButtons = await page.$$(
-        'button[aria-label*="like" i], button[aria-label*="reaction" i], button[aria-pressed="false"]'
-      );
+    let success = false;
+    let targetCandidate: ArticleCandidate | null = null;
 
-      for (const btn of allLikeButtons) {
-        const isPressed = await btn.getAttribute('aria-pressed');
-        if (isPressed === 'true') continue;
+    for (const cand of candidates) {
+      // Tier 1: Direct HTTP API reaction call
+      const apiLikeSuccess = await postLikeApi(page, cand.postId);
+      if (apiLikeSuccess) {
+        targetCandidate = cand;
+        success = true;
+        process.stdout.write(`[LIKE API] ✅ Liked article ${cand.postId} via direct API request.\n`);
+        break;
+      }
 
-        // Try to identify closest ancestor link or id
-        const cardParent = await btn.evaluateHandle((el) =>
-          el.closest('article, div[class*="card"], [data-testid*="post"]')
-        );
-        let idCandidate = `post_${Date.now()}`;
-        if (cardParent) {
-          const href = await page.evaluate((el: any) => {
-            const a = el?.querySelector?.('a[href*="/"]');
-            return a ? a.getAttribute('href') : null;
-          }, cardParent);
-          if (href) {
-            const match = href.match(/\/(?:post|article|content)\/([a-zA-Z0-9_-]+)/);
-            idCandidate = match ? match[1] : href;
+      // Tier 2: DOM-based reaction fallback
+      try {
+        await page.goto(cand.postUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await randomDelay(1500, 3000);
+
+        const headingEl = await page.$('h1, [data-testid*="post-title"], [data-testid*="article-title"]');
+        if (headingEl) {
+          const titleText = await headingEl.textContent();
+          if (titleText) cand.postTitle = titleText.trim();
+        }
+
+        await humanScroll(page);
+        await randomDelay(1000, 2000);
+
+        const likeBtnSelectors = [
+          'button[aria-label*="like" i]',
+          'button[aria-label*="upvote" i]',
+          'button[aria-label*="reaction" i]',
+          'button[aria-label*="heart" i]',
+          'button[aria-label*="thumbs" i]',
+          '[data-testid*="like"]',
+          '[data-testid*="upvote"]',
+          '[data-testid*="reaction"]',
+          '[data-testid*="heart"]',
+          'button:has-text("Like")',
+          'button:has-text("Upvote")',
+          'article button:has(svg)',
+          'main button:has(svg)',
+        ];
+
+        let articleLikeBtn = null;
+        for (const sel of likeBtnSelectors) {
+          const candidate = await page.$(sel);
+          if (candidate && (await candidate.isVisible().catch(() => false))) {
+            articleLikeBtn = candidate;
+            break;
           }
         }
 
-        if (!alreadyLikedIds.has(idCandidate)) {
-          targetPostId = idCandidate;
-          targetCard = btn;
-          break;
+        if (!articleLikeBtn) {
+          await page.evaluate(() => window.scrollBy(0, 600));
+          await randomDelay(1000, 2000);
+          for (const sel of likeBtnSelectors) {
+            const candidate = await page.$(sel);
+            if (candidate && (await candidate.isVisible().catch(() => false))) {
+              articleLikeBtn = candidate;
+              break;
+            }
+          }
         }
+
+        if (articleLikeBtn) {
+          await articleLikeBtn.scrollIntoViewIfNeeded().catch(() => {});
+          await randomDelay(800, 1500);
+          await articleLikeBtn.click();
+          await randomDelay(1500, 3000);
+          targetCandidate = cand;
+          success = true;
+          break;
+        } else {
+          process.stderr.write(`[LIKE] Like button not found on ${cand.postUrl}. Trying next candidate article...\n`);
+        }
+      } catch (err: any) {
+        process.stderr.write(`[LIKE] Error during like on ${cand.postUrl}: ${err.message}. Trying next candidate article...\n`);
       }
     }
 
-    if (!targetPostId || !targetCard) {
-      throw new Error('No unliked articles available in visible feed');
+    if (!success || !targetCandidate) {
+      throw new Error('Could not locate a clickable like button on any explored community articles');
     }
-
-    // Scroll to the card and click the like button
-    await targetCard.scrollIntoViewIfNeeded();
-    await randomDelay(800, 2000);
-
-    const btn = await targetCard.$(
-      'button[aria-label*="like" i], button[aria-label*="reaction" i], button[aria-pressed="false"]'
-    );
-    const btnToClick = btn || targetCard;
-
-    await btnToClick.click();
-    await randomDelay(1500, 3000);
 
     // Record interaction in SQLite
     try {
       insertInteraction(db, {
         run_id: runId,
-        post_id: targetPostId,
-        post_url: targetUrl,
-        post_title: targetTitle,
+        post_id: targetCandidate.postId,
+        post_url: targetCandidate.postUrl,
+        post_title: targetCandidate.postTitle,
         action_type: 'like',
         comment_text: null,
         created_at: new Date().toISOString(),
       });
     } catch (dbErr: any) {
       if (dbErr.message?.includes('UNIQUE constraint')) {
-        throw new Error(`Article ${targetPostId} already liked (dedup collision)`);
+        throw new Error(`Article ${targetCandidate.postId} already liked (dedup collision)`);
       }
       throw dbErr;
     }
 
     const durationMs = Date.now() - startTime;
     emitter.stepCompleted('like', durationMs, {
-      postId: targetPostId,
-      postTitle: targetTitle,
-      url: targetUrl,
+      postId: targetCandidate.postId,
+      postTitle: targetCandidate.postTitle,
+      url: targetCandidate.postUrl,
     });
 
     return {
@@ -165,7 +143,7 @@ export async function executeLike(
       status: 'completed',
       durationMs,
       retryCount: 0,
-      resultData: { postId: targetPostId, postTitle: targetTitle },
+      resultData: { postId: targetCandidate.postId, postTitle: targetCandidate.postTitle },
     };
   } catch (err: any) {
     const durationMs = Date.now() - startTime;

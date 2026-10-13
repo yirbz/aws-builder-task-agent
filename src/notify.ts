@@ -7,10 +7,21 @@ export function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;');
 }
 
+export function getNextMilestoneTarget(current: number): number {
+  if (current < 7) return 7;
+  if (current < 30) return 30;
+  if (current < 60) return 60;
+  return 90;
+}
+
 export function formatTelegramReport(report: ExecutionReport): string {
   const statusIcon =
     report.status === 'completed' ? '✅' : report.status === 'partial' ? '⚠️' : '🚨';
   const statusTitle = report.status.toUpperCase();
+
+  const visitMilestone = getNextMilestoneTarget(report.streaks.visit);
+  const likeMilestone = getNextMilestoneTarget(report.streaks.like);
+  const commentMilestone = getNextMilestoneTarget(report.streaks.comment);
 
   const stepLines = report.steps
     .map((s) => {
@@ -24,10 +35,10 @@ export function formatTelegramReport(report: ExecutionReport): string {
     `${statusIcon} <b>AWS Streak Agent: ${statusTitle}</b>\n\n` +
     `<b>Run ID:</b> <code>${escapeHtml(report.runId)}</code>\n` +
     `<b>Duration:</b> ${(report.durationMs / 1000).toFixed(1)}s\n` +
-    `<b>Streak Progress (Goal: ${report.streaks.target}d):</b>\n` +
-    `  • Visit: <b>${report.streaks.visit}</b> / ${report.streaks.target} 🔥\n` +
-    `  • Like: <b>${report.streaks.like}</b> / ${report.streaks.target} 🔥\n` +
-    `  • Comment: <b>${report.streaks.comment}</b> / ${report.streaks.target} 🔥\n\n` +
+    `<b>Streak & Milestone Progress:</b>\n` +
+    `  • Visit: <b>${report.streaks.visit}</b> / ${visitMilestone}d milestone (Goal: ${report.streaks.target}d) 🔥\n` +
+    `  • Like: <b>${report.streaks.like}</b> / ${likeMilestone}d milestone (Goal: ${report.streaks.target}d) 🔥\n` +
+    `  • Comment: <b>${report.streaks.comment}</b> / ${commentMilestone}d milestone (Goal: ${report.streaks.target}d) 🔥\n\n` +
     `<b>Step Breakdown:</b>\n${stepLines}`;
 
   if (report.errorMessage) {
@@ -107,16 +118,30 @@ export async function sendTelegramNotification(
     formData.append('caption', fullHtml.slice(0, 1024));
     formData.append('parse_mode', 'HTML');
 
-    const blob = new Blob([screenshotBuffer], { type: 'image/png' });
+    const blob = new Blob([new Uint8Array(screenshotBuffer)], { type: 'image/png' });
     formData.append('photo', blob, 'screenshot.png');
 
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-      method: 'POST',
-      body: formData,
-    });
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+        method: 'POST',
+        body: formData,
+      });
 
-    if (!res.ok) {
-      throw new Error(`Telegram sendPhoto failed: ${res.status} ${await res.text()}`);
+      if (!res.ok) {
+        throw new Error(`Telegram sendPhoto failed: ${res.status} ${await res.text()}`);
+      }
+    } catch (err: any) {
+      process.stderr.write(`[WARN] Failed to send Telegram photo: ${err.message}. Falling back to text message.\n`);
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: fullHtml,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        }),
+      });
     }
 
     // If report text was truncated, follow up with text message for full diagnostics
@@ -168,7 +193,7 @@ export async function sendDiscordNotification(
       })
     );
 
-    const blob = new Blob([screenshotBuffer], { type: 'image/png' });
+    const blob = new Blob([new Uint8Array(screenshotBuffer)], { type: 'image/png' });
     formData.append('files[0]', blob, 'screenshot.png');
 
     const res = await fetch(webhookUrl, {
@@ -203,28 +228,41 @@ export async function sendNotification(
 ): Promise<void> {
   const tasks: Promise<void>[] = [];
 
-  if (config.notifications.telegram.enabled && config.notifications.telegram.botToken && config.notifications.telegram.chatId) {
+  const tgToken = config.notifications.telegram.botToken;
+  const tgChatId = config.notifications.telegram.chatId;
+  const tgEnabled = config.notifications.telegram.enabled;
+
+  if (tgEnabled && tgToken && tgChatId) {
     tasks.push(
-      sendTelegramNotification(
-        config.notifications.telegram.botToken,
-        config.notifications.telegram.chatId,
-        report,
-        screenshotBuffer
-      ).catch((err) => {
-        process.stderr.write(`[WARN] Failed to dispatch Telegram alert: ${err.message}\n`);
-      })
+      sendTelegramNotification(tgToken, tgChatId, report, screenshotBuffer)
+        .then(() => {
+          process.stdout.write(
+            `[NOTIFY] Telegram notification successfully dispatched to chat ${tgChatId}.\n`
+          );
+        })
+        .catch((err) => {
+          process.stderr.write(`[WARN] Failed to dispatch Telegram alert: ${err.message}\n`);
+        })
+    );
+  } else if (tgToken || tgChatId) {
+    process.stderr.write(
+      `[NOTIFY INFO] Telegram notification skipped: enabled=${tgEnabled}, ` +
+        `hasToken=${Boolean(tgToken)}, hasChatId=${Boolean(tgChatId)}\n`
     );
   }
 
-  if (config.notifications.discord.enabled && config.notifications.discord.webhookUrl) {
+  const dcUrl = config.notifications.discord.webhookUrl;
+  const dcEnabled = config.notifications.discord.enabled;
+
+  if (dcEnabled && dcUrl) {
     tasks.push(
-      sendDiscordNotification(
-        config.notifications.discord.webhookUrl,
-        report,
-        screenshotBuffer
-      ).catch((err) => {
-        process.stderr.write(`[WARN] Failed to dispatch Discord alert: ${err.message}\n`);
-      })
+      sendDiscordNotification(dcUrl, report, screenshotBuffer)
+        .then(() => {
+          process.stdout.write(`[NOTIFY] Discord notification successfully dispatched.\n`);
+        })
+        .catch((err) => {
+          process.stderr.write(`[WARN] Failed to dispatch Discord alert: ${err.message}\n`);
+        })
     );
   }
 

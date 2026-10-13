@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConfig, applyEnvOverrides, DEFAULT_CONFIG } from '../../src/config.js';
+import { validateConfig, applyEnvOverrides, DEFAULT_CONFIG, loadConfig } from '../../src/config.js';
 import type { Config } from '../../src/types.js';
 
 describe('Configuration Module', () => {
@@ -54,5 +54,37 @@ describe('Configuration Module', () => {
     delete process.env.STREAK_SCHEDULE__WINDOW_START;
     delete process.env.STREAK_SCHEDULE__WINDOW_MINUTES;
     delete process.env.STREAK_COMMENTS__PROVIDER;
+  });
+
+  it('should override gemini model from STREAK_COMMENTS__GEMINI_MODEL or GEMINI_MODEL', () => {
+    process.env.STREAK_COMMENTS__GEMINI_MODEL = 'gemini-2.5-flash';
+    let overridden = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(overridden.comments.geminiModel).toBe('gemini-2.5-flash');
+    delete process.env.STREAK_COMMENTS__GEMINI_MODEL;
+
+    process.env.GEMINI_MODEL = 'gemini-1.5-pro';
+    overridden = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(overridden.comments.geminiModel).toBe('gemini-1.5-pro');
+    delete process.env.GEMINI_MODEL;
+  });
+
+  it('should auto-enable telegram if botToken and chatId are present in env', () => {
+    process.env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11';
+    process.env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID = '987654321';
+
+    const overridden = applyEnvOverrides(DEFAULT_CONFIG);
+    expect(overridden.notifications.telegram.enabled).toBe(true);
+    expect(overridden.notifications.telegram.botToken).toBe('123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11');
+    expect(overridden.notifications.telegram.chatId).toBe('987654321');
+
+    delete process.env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN;
+    delete process.env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID;
+  });
+
+  it('should gracefully handle configPath being a directory without throwing EISDIR', () => {
+    // Pass an existing directory, e.g. ./tests
+    const config = loadConfig('./tests');
+    expect(config).toBeDefined();
+    expect(config.schedule.windowStart).toBe('10:45');
   });
 });

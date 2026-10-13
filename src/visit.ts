@@ -2,6 +2,7 @@ import type { Page } from 'rebrowser-playwright';
 import type { StepResult } from './types.js';
 import type { EventEmitter } from './events.js';
 import { humanScroll, randomDelay } from './human-behavior.js';
+import { fetchRecentPostsApi, recordViewApi } from './api-client.js';
 
 export async function executeVisit(
   page: Page,
@@ -16,9 +17,17 @@ export async function executeVisit(
       timeout: 30000,
     });
 
+    // Record content view via Content Services API
+    try {
+      const posts = await fetchRecentPostsApi(page);
+      if (posts.length > 0) {
+        await recordViewApi(page, posts[0].postId);
+      }
+    } catch {}
+
     // Human-like reading behavior
     await humanScroll(page);
-    await randomDelay(2000, 5000);
+    await randomDelay(2000, 4000);
 
     const durationMs = Date.now() - startTime;
     emitter.stepCompleted('visit', durationMs);

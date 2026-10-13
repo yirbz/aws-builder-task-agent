@@ -79,6 +79,12 @@ export function initDb(dbPath: string): DatabaseInstance {
       payload TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS streak_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
     CREATE INDEX IF NOT EXISTS idx_runs_scheduled_at ON runs(scheduled_at);
     CREATE INDEX IF NOT EXISTS idx_steps_run_id ON steps(run_id);
@@ -158,6 +164,11 @@ export function insertStep(db: DatabaseInstance, step: Step): number {
     error_message: step.error_message ?? null,
     result_data: step.result_data ?? null,
   });
+
+  if (step.status === 'completed') {
+    recordActionTimestamp(db, step.step_name as any, step.completed_at || step.started_at);
+  }
+
   return Number(info.lastInsertRowid);
 }
 
@@ -181,6 +192,7 @@ export function insertInteraction(db: DatabaseInstance, interaction: Interaction
       @run_id, @post_id, @post_url, @post_title, @action_type, @comment_text, @created_at
     )
   `);
+  const createdAt = interaction.created_at || new Date().toISOString();
   const info = stmt.run({
     run_id: interaction.run_id,
     post_id: interaction.post_id,
@@ -188,8 +200,11 @@ export function insertInteraction(db: DatabaseInstance, interaction: Interaction
     post_title: interaction.post_title ?? null,
     action_type: interaction.action_type,
     comment_text: interaction.comment_text ?? null,
-    created_at: interaction.created_at || new Date().toISOString(),
+    created_at: createdAt,
   });
+
+  recordActionTimestamp(db, interaction.action_type, createdAt);
+
   return Number(info.lastInsertRowid);
 }
 
@@ -302,4 +317,96 @@ export function getConsecutiveCompletedDays(db: DatabaseInstance): {
     like: latest.streak_like_after ?? latest.streak_like_before ?? 0,
     comment: latest.streak_comment_after ?? latest.streak_comment_before ?? 0,
   };
+}
+
+export interface LastActionTimestamps {
+  authenticate: string | null;
+  authenticated: string | null;
+  visit: string | null;
+  like: string | null;
+  comment: string | null;
+  verify: string | null;
+}
+
+export function setState(db: DatabaseInstance, key: string, value: string): void {
+  const stmt = db.prepare(`
+    INSERT INTO streak_state (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `);
+  stmt.run(key, value, new Date().toISOString());
+}
+
+export function getState(db: DatabaseInstance, key: string): string | null {
+  try {
+    const stmt = db.prepare(`SELECT value FROM streak_state WHERE key = ?`);
+    const row = stmt.get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function recordActionTimestamp(
+  db: DatabaseInstance,
+  action: 'authenticate' | 'visit' | 'like' | 'comment' | 'verify',
+  timestamp: string = new Date().toISOString()
+): void {
+  setState(db, `last_${action}_at`, timestamp);
+}
+
+export function getLastActionTimestamps(db: DatabaseInstance): LastActionTimestamps {
+  const getTs = (key: string, fallbackQuery: string, param?: string): string | null => {
+    const fromState = getState(db, `last_${key}_at`);
+    if (fromState) return fromState;
+    try {
+      const stmt = db.prepare(fallbackQuery);
+      const row = (param ? stmt.get(param) : stmt.get()) as { ts: string } | undefined;
+      return row?.ts ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const authTs = getTs(
+    'authenticate',
+    `SELECT completed_at as ts FROM steps WHERE step_name = 'authenticate' AND status = 'completed' ORDER BY completed_at DESC LIMIT 1`
+  );
+
+  return {
+    authenticate: authTs,
+    authenticated: authTs,
+    visit: getTs(
+      'visit',
+      `SELECT completed_at as ts FROM steps WHERE step_name = 'visit' AND status = 'completed' ORDER BY completed_at DESC LIMIT 1`
+    ),
+    like: getTs(
+      'like',
+      `SELECT created_at as ts FROM interactions WHERE action_type = 'like' ORDER BY created_at DESC LIMIT 1`
+    ),
+    comment: getTs(
+      'comment',
+      `SELECT created_at as ts FROM interactions WHERE action_type = 'comment' ORDER BY created_at DESC LIMIT 1`
+    ),
+    verify: getTs(
+      'verify',
+      `SELECT completed_at as ts FROM steps WHERE step_name = 'verify' AND status = 'completed' ORDER BY completed_at DESC LIMIT 1`
+    ),
+  };
+}
+
+export function isActionCompletedWithinHours(
+  db: DatabaseInstance,
+  action: 'authenticate' | 'visit' | 'like' | 'comment' | 'verify',
+  hours: number = 20
+): boolean {
+  const timestamps = getLastActionTimestamps(db);
+  const ts = timestamps[action];
+  if (!ts) return false;
+
+  const actionTime = new Date(ts).getTime();
+  if (Number.isNaN(actionTime)) return false;
+
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  return actionTime >= cutoff;
 }

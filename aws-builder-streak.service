@@ -1,0 +1,20 @@
+[Unit]
+Description=AWS Builder Center Streak Agent 24/7 Daemon
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/yvniel/aws-builder-task-agent
+Environment=PATH=/home/yvniel/.local/share/pnpm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStartPre=-/usr/bin/docker compose stop streak-agent prometheus
+ExecStart=/usr/bin/docker compose up streak-agent prometheus
+ExecStop=/usr/bin/docker compose stop streak-agent prometheus
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

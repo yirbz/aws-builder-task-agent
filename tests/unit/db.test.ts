@@ -11,6 +11,11 @@ import {
   getStepsByRunId,
   getEventsByRunId,
   getTodayCompletedRun,
+  setState,
+  getState,
+  recordActionTimestamp,
+  getLastActionTimestamps,
+  isActionCompletedWithinHours,
 } from '../../src/db.js';
 import type { DatabaseInstance } from '../../src/db.js';
 
@@ -252,5 +257,69 @@ describe('SQLite Database Layer', () => {
     expect(events[0].event_type).toBe('task.started');
     expect(events[1].event_type).toBe('task.step.completed');
     expect(events[1].sequence_number).toBe(2);
+  });
+
+  it('should store and query key-value state in streak_state table', () => {
+    setState(db, 'custom_key', 'custom_value');
+    expect(getState(db, 'custom_key')).toBe('custom_value');
+    expect(getState(db, 'non_existent')).toBeNull();
+
+    // Overwrite existing key
+    setState(db, 'custom_key', 'updated_value');
+    expect(getState(db, 'custom_key')).toBe('updated_value');
+  });
+
+  it('should track and evaluate action timestamps for 24h cycles', () => {
+    const runId = 'test-run-ts';
+    insertRun(db, {
+      run_id: runId,
+      scheduled_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      duration_ms: null,
+      status: 'running',
+      streak_visit_before: 0,
+      streak_like_before: 0,
+      streak_comment_before: 0,
+      streak_visit_after: null,
+      streak_like_after: null,
+      streak_comment_after: null,
+      error_message: null,
+      error_stack: null,
+    });
+
+    const nowIso = new Date().toISOString();
+    insertStep(db, {
+      run_id: runId,
+      step_name: 'visit',
+      sequence_number: 1,
+      status: 'completed',
+      started_at: nowIso,
+      completed_at: nowIso,
+      duration_ms: 1000,
+      retry_count: 0,
+      error_type: null,
+      error_message: null,
+      result_data: null,
+    });
+
+    insertInteraction(db, {
+      run_id: runId,
+      post_id: 'post-test-ts',
+      post_url: 'https://builder.aws.com/content/post-test-ts',
+      post_title: 'Test Post',
+      action_type: 'like',
+      comment_text: null,
+      created_at: nowIso,
+    });
+
+    const timestamps = getLastActionTimestamps(db);
+    expect(timestamps.visit).toBe(nowIso);
+    expect(timestamps.like).toBe(nowIso);
+    expect(timestamps.comment).toBeNull();
+
+    expect(isActionCompletedWithinHours(db, 'visit', 20)).toBe(true);
+    expect(isActionCompletedWithinHours(db, 'like', 20)).toBe(true);
+    expect(isActionCompletedWithinHours(db, 'comment', 20)).toBe(false);
   });
 });

@@ -9,10 +9,17 @@ import {
   getConsecutiveCompletedDays,
   getRecentInteractions,
   getInteractionCount,
+  getLastActionTimestamps,
 } from './db.js';
 import { runDailyStreak } from './streak-runner.js';
 import { launchAuthenticatedContext, persistSession, verifyAuthentication } from './auth.js';
 import { startScheduler, acquireSchedulerLock } from './scheduler.js';
+import {
+  syncRegistryFromDb,
+  loadRegistry,
+  getCurrentUtcDateKey,
+  getRegistryPath,
+} from './registry.js';
 import type { ActionType, StepName, StreakStatus } from './types.js';
 
 interface CliArgs {
@@ -141,9 +148,25 @@ async function handleStatus(cliArgs: CliArgs): Promise<number> {
     daysRemaining,
   };
 
+  const timestamps = getLastActionTimestamps(db);
+  const registry = syncRegistryFromDb(db);
+  const cycle = registry.currentCycle;
+
   if (cliArgs.json) {
-    process.stdout.write(`${JSON.stringify(streakStatus, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ ...streakStatus, timestamps, registry }, null, 2)}\n`);
   } else {
+    const authStr = timestamps.authenticated ? timestamps.authenticated.slice(0, 19).replace('T', ' ') + ' UTC' : 'None';
+    const visitStr = timestamps.visit ? timestamps.visit.slice(0, 19).replace('T', ' ') + ' UTC' : 'None';
+    const likeStr = timestamps.like ? timestamps.like.slice(0, 19).replace('T', ' ') + ' UTC' : 'None';
+    const commentStr = timestamps.comment ? timestamps.comment.slice(0, 19).replace('T', ' ') + ' UTC' : 'None';
+    const verifyStr = timestamps.verify ? timestamps.verify.slice(0, 19).replace('T', ' ') + ' UTC' : 'None';
+
+    const cycleStatusStr = cycle.status === 'completed'
+      ? '✅ Completed'
+      : cycle.status === 'in_progress'
+      ? '⏳ In-progress'
+      : '⏳ Pending';
+
     process.stdout.write(`
 AWS Badge Streak Agent — Status
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -153,6 +176,23 @@ AWS Badge Streak Agent — Status
   Visit           ${consecutive.visit}/${targetDays}   ${targetDays}        ${todayCompleted ? '✅ Today completed' : '⏳ Pending / In-progress'}
   Like            ${consecutive.like}/${targetDays}   ${targetDays}        ${todayCompleted ? '✅ Today completed' : '⏳ Pending / In-progress'}
   Comment         ${consecutive.comment}/${targetDays}   ${targetDays}        ${todayCompleted ? '✅ Today completed' : '⏳ Pending / In-progress'}
+
+  UTC 24h Cycle Registry (data/streak-registry.json):
+  ──────────────────────────────────────────────────
+  • Current UTC Date:     ${registry.currentUtcDate}
+  • Cycle Status:         ${cycleStatusStr}
+  • Visit Action:         ${cycle.actions.visit.completed ? '✅ Completed' : '❌ Pending'} (${cycle.actions.visit.timestamp ? cycle.actions.visit.timestamp.slice(0, 19).replace('T', ' ') + ' UTC' : 'None'})
+  • Like Action:          ${cycle.actions.like.completed ? '✅ Completed' : '❌ Pending'} (${cycle.actions.like.timestamp ? cycle.actions.like.timestamp.slice(0, 19).replace('T', ' ') + ' UTC' : 'None'})
+  • Comment Action:       ${cycle.actions.comment.completed ? '✅ Completed' : '❌ Pending'} (${cycle.actions.comment.timestamp ? cycle.actions.comment.timestamp.slice(0, 19).replace('T', ' ') + ' UTC' : 'None'})
+  • Verify Action:        ${cycle.actions.verify.completed ? '✅ Completed' : '❌ Pending'} (${cycle.actions.verify.timestamp ? cycle.actions.verify.timestamp.slice(0, 19).replace('T', ' ') + ' UTC' : 'None'})
+
+  Last Action Timestamps (Database):
+  ──────────────────────────────────────────
+  • Last Authentication:  ${authStr}
+  • Last Visit:           ${visitStr}
+  • Last Like:            ${likeStr}
+  • Last Comment:         ${commentStr}
+  • Last Verification:    ${verifyStr}
 
   Last run:       ${latestRun ? `${latestRun.started_at} (${latestRun.status})` : 'No runs recorded'}
   Next window:    ${config.schedule.windowStart} (${config.schedule.timezone}, window: ${config.schedule.windowMinutes}m)
@@ -167,14 +207,57 @@ AWS Badge Streak Agent — Status
   return 0;
 }
 
+async function handleRegistry(cliArgs: CliArgs): Promise<number> {
+  let config;
+  try {
+    config = loadConfig(cliArgs.configPath);
+    ensureDirectories(config);
+  } catch (err: any) {
+    process.stderr.write(`[CONFIG ERROR] ${err.message}\n`);
+    return 3;
+  }
+
+  const db = initDb(config.database.path);
+  const registry = syncRegistryFromDb(db);
+
+  if (cliArgs.json) {
+    process.stdout.write(`${JSON.stringify(registry, null, 2)}\n`);
+  } else {
+    process.stdout.write(`
+Local UTC Streak Registry
+━━━━━━━━━━━━━━━━━━━━━━━━━
+• File Location:     ${getRegistryPath()}
+• Current UTC Day:   ${registry.currentUtcDate}
+• Cycle Status:      ${registry.currentCycle.status}
+• Last Updated:      ${registry.lastUpdated}
+• Completed At:      ${registry.currentCycle.completedAt || 'None'}
+
+Actions in Current UTC Lapse:
+  • Visit:   ${registry.currentCycle.actions.visit.completed ? '✅ Completed' : '❌ Pending'} (${registry.currentCycle.actions.visit.timestamp || 'N/A'})
+  • Like:    ${registry.currentCycle.actions.like.completed ? '✅ Completed' : '❌ Pending'} (${registry.currentCycle.actions.like.timestamp || 'N/A'})
+  • Comment: ${registry.currentCycle.actions.comment.completed ? '✅ Completed' : '❌ Pending'} (${registry.currentCycle.actions.comment.timestamp || 'N/A'})
+  • Verify:  ${registry.currentCycle.actions.verify.completed ? '✅ Completed' : '❌ Pending'} (${registry.currentCycle.actions.verify.timestamp || 'N/A'})
+
+Recorded Streaks: Visit: ${registry.currentCycle.streaks.visit} | Like: ${registry.currentCycle.streaks.like} | Comment: ${registry.currentCycle.streaks.comment}
+Total History Days Tracked: ${Object.keys(registry.history).length}
+\n`);
+  }
+
+  return 0;
+}
+
 async function handleAuthLogin(cliArgs: CliArgs): Promise<number> {
   const config = loadConfig(cliArgs.configPath);
   ensureDirectories(config);
 
+  const remoteUrl = process.env.TAILSCALE_IP
+    ? `http://${process.env.TAILSCALE_IP}:6080/`
+    : 'http://localhost:6080/';
+
   process.stdout.write(
     `[AUTH] Launching interactive headed browser for AWS Builder Center login...\n` +
       `[AUTH] Please complete login, MFA, and select 'Remember this device'.\n` +
-      `[AUTH] The window will automatically save session cookies and close upon successful authentication.\n`
+      `[AUTH] Access web interface at: ${remoteUrl}\n`
   );
 
   const { context, page } = await launchAuthenticatedContext(config, true);
@@ -187,8 +270,10 @@ async function handleAuthLogin(cliArgs: CliArgs): Promise<number> {
     const start = Date.now();
 
     let authenticated = false;
+    let pollCount = 0;
     while (Date.now() - start < maxWaitMs) {
       await page.waitForTimeout(pollIntervalMs);
+      pollCount++;
 
       // Check all open pages in context (handles redirects/popups)
       const pages = context.pages();
@@ -197,22 +282,8 @@ async function handleAuthLogin(cliArgs: CliArgs): Promise<number> {
         if (authenticated) break;
       }
 
-      // Also verify context-level session cookies directly
-      if (!authenticated) {
-        try {
-          const cookies = await context.cookies('https://builder.aws.com');
-          const hasSession = cookies.some(
-            (c) =>
-              c.name === 'builder-session-token' ||
-              c.name === 'builder-auth-provider' ||
-              c.name.includes('builder-session')
-          );
-          if (hasSession) {
-            authenticated = true;
-          }
-        } catch {
-          // Context reading error
-        }
+      if (pollCount % 5 === 0 && !authenticated) {
+        process.stdout.write(`[AUTH] Still waiting for sign-in completion at ${remoteUrl} ...\n`);
       }
 
       if (authenticated) {
@@ -311,9 +382,12 @@ async function main(): Promise<void> {
     case 'scheduler:start':
       exitCode = await handleScheduler(cliArgs);
       break;
+    case 'registry':
+      exitCode = await handleRegistry(cliArgs);
+      break;
     default:
       process.stderr.write(`Unknown command: "${cliArgs.command}".\n`);
-      process.stderr.write(`Available commands: run, status, auth:login, history, scheduler:start\n`);
+      process.stderr.write(`Available commands: run, status, registry, auth:login, history, scheduler:start\n`);
       exitCode = 1;
       break;
   }

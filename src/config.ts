@@ -39,6 +39,10 @@ export const DEFAULT_CONFIG: Config = {
     baseDelayMs: 2000,
     maxDelayMs: 30000,
   },
+  metrics: {
+    enabled: true,
+    port: 9091,
+  },
 };
 
 function deepMerge<T extends Record<string, any>>(target: T, source: Partial<T>): T {
@@ -143,11 +147,11 @@ export function applyEnvOverrides(config: Config): Config {
   if (env.STREAK_COMMENTS__PROVIDER) {
     cfg.comments.provider = env.STREAK_COMMENTS__PROVIDER as any;
   }
-  if (env.STREAK_COMMENTS__GEMINI_API_KEY) {
-    cfg.comments.geminiApiKey = env.STREAK_COMMENTS__GEMINI_API_KEY;
+  if (env.STREAK_COMMENTS__GEMINI_API_KEY || env.GEMINI_API_KEY) {
+    cfg.comments.geminiApiKey = env.STREAK_COMMENTS__GEMINI_API_KEY || env.GEMINI_API_KEY || '';
   }
-  if (env.STREAK_COMMENTS__GEMINI_MODEL) {
-    cfg.comments.geminiModel = env.STREAK_COMMENTS__GEMINI_MODEL;
+  if (env.STREAK_COMMENTS__GEMINI_MODEL || env.GEMINI_MODEL) {
+    cfg.comments.geminiModel = env.STREAK_COMMENTS__GEMINI_MODEL || env.GEMINI_MODEL || '';
   }
   if (env.STREAK_COMMENTS__OLLAMA_BASE_URL) {
     cfg.comments.ollamaBaseUrl = env.STREAK_COMMENTS__OLLAMA_BASE_URL;
@@ -159,21 +163,32 @@ export function applyEnvOverrides(config: Config): Config {
     cfg.comments.timeoutMs = Number.parseInt(env.STREAK_COMMENTS__TIMEOUT_MS, 10);
   }
 
-  if (env.STREAK_NOTIFICATIONS__TELEGRAM__ENABLED !== undefined) {
-    cfg.notifications.telegram.enabled = env.STREAK_NOTIFICATIONS__TELEGRAM__ENABLED === 'true';
+  if (env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN || env.TELEGRAM_BOT_TOKEN) {
+    cfg.notifications.telegram.botToken =
+      env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN || env.TELEGRAM_BOT_TOKEN || '';
   }
-  if (env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN) {
-    cfg.notifications.telegram.botToken = env.STREAK_NOTIFICATIONS__TELEGRAM__BOT_TOKEN;
+  if (env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID || env.TELEGRAM_CHAT_ID) {
+    cfg.notifications.telegram.chatId =
+      env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID || env.TELEGRAM_CHAT_ID || '';
   }
-  if (env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID) {
-    cfg.notifications.telegram.chatId = env.STREAK_NOTIFICATIONS__TELEGRAM__CHAT_ID;
+  if (env.STREAK_NOTIFICATIONS__TELEGRAM__ENABLED !== undefined || env.TELEGRAM_ENABLED !== undefined) {
+    const val = env.STREAK_NOTIFICATIONS__TELEGRAM__ENABLED ?? env.TELEGRAM_ENABLED;
+    cfg.notifications.telegram.enabled = val === 'true';
+  } else if (cfg.notifications.telegram.botToken && cfg.notifications.telegram.chatId) {
+    // Automatically enable Telegram if both bot token and chatId are provided
+    cfg.notifications.telegram.enabled = true;
   }
 
-  if (env.STREAK_NOTIFICATIONS__DISCORD__ENABLED !== undefined) {
-    cfg.notifications.discord.enabled = env.STREAK_NOTIFICATIONS__DISCORD__ENABLED === 'true';
+  if (env.STREAK_NOTIFICATIONS__DISCORD__WEBHOOK_URL || env.DISCORD_WEBHOOK_URL) {
+    cfg.notifications.discord.webhookUrl =
+      env.STREAK_NOTIFICATIONS__DISCORD__WEBHOOK_URL || env.DISCORD_WEBHOOK_URL || '';
   }
-  if (env.STREAK_NOTIFICATIONS__DISCORD__WEBHOOK_URL) {
-    cfg.notifications.discord.webhookUrl = env.STREAK_NOTIFICATIONS__DISCORD__WEBHOOK_URL;
+  if (env.STREAK_NOTIFICATIONS__DISCORD__ENABLED !== undefined || env.DISCORD_ENABLED !== undefined) {
+    const val = env.STREAK_NOTIFICATIONS__DISCORD__ENABLED ?? env.DISCORD_ENABLED;
+    cfg.notifications.discord.enabled = val === 'true';
+  } else if (cfg.notifications.discord.webhookUrl) {
+    // Automatically enable Discord if webhookUrl is provided
+    cfg.notifications.discord.enabled = true;
   }
 
   if (env.STREAK_DATABASE__PATH) {
@@ -190,6 +205,15 @@ export function applyEnvOverrides(config: Config): Config {
     cfg.retry.maxDelayMs = Number.parseInt(env.STREAK_RETRY__MAX_DELAY_MS, 10);
   }
 
+  if (env.STREAK_METRICS__PORT) {
+    if (!cfg.metrics) cfg.metrics = { enabled: true, port: 9091 };
+    cfg.metrics.port = Number.parseInt(env.STREAK_METRICS__PORT, 10);
+  }
+  if (env.STREAK_METRICS__ENABLED !== undefined) {
+    if (!cfg.metrics) cfg.metrics = { enabled: true, port: 9091 };
+    cfg.metrics.enabled = env.STREAK_METRICS__ENABLED === 'true';
+  }
+
   return cfg;
 }
 
@@ -199,8 +223,29 @@ export function loadConfig(configPath?: string): Config {
 
   if (fs.existsSync(resolvedPath)) {
     try {
-      const raw = fs.readFileSync(resolvedPath, 'utf-8');
-      fileConfig = JSON.parse(raw);
+      const stat = fs.statSync(resolvedPath);
+      if (stat.isDirectory()) {
+        const nestedConfig = path.join(resolvedPath, 'config.json');
+        if (fs.existsSync(nestedConfig) && fs.statSync(nestedConfig).isFile()) {
+          const raw = fs.readFileSync(nestedConfig, 'utf-8');
+          fileConfig = JSON.parse(raw);
+        } else {
+          process.stderr.write(
+            `[CONFIG WARNING] "${resolvedPath}" is a directory, not a file.\n` +
+              `This usually happens when Docker auto-creates "./config.json" as a directory because it was missing on the host.\n` +
+              `To fix on host: "rm -rf config.json && cp config.example.json config.json"\n` +
+              `Falling back to default / example configuration.\n`
+          );
+          const examplePath = path.resolve(path.dirname(resolvedPath), 'config.example.json');
+          if (fs.existsSync(examplePath) && fs.statSync(examplePath).isFile()) {
+            const raw = fs.readFileSync(examplePath, 'utf-8');
+            fileConfig = JSON.parse(raw);
+          }
+        }
+      } else {
+        const raw = fs.readFileSync(resolvedPath, 'utf-8');
+        fileConfig = JSON.parse(raw);
+      }
     } catch (err: any) {
       throw new Error(`Failed to parse configuration file at "${resolvedPath}": ${err.message}`);
     }

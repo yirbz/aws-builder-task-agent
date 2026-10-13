@@ -21,6 +21,52 @@ export async function humanScroll(page: Page): Promise<void> {
 }
 
 /**
+ * Scroll progressively to the bottom of the page in a natural, reading-like pattern.
+ * AWS Builder Center articles can be very long and the comment section is typically
+ * located far below the article content. This function ensures we reach it.
+ */
+export async function humanScrollToBottom(page: Page): Promise<void> {
+  let previousHeight = 0;
+  let staleCount = 0;
+
+  while (staleCount < 3) {
+    const currentHeight = await page.evaluate(() => document.body.scrollHeight);
+    const viewportHeight = await page.evaluate(() => window.innerHeight);
+    const currentScroll = await page.evaluate(() => window.scrollY);
+
+    // Already at or near the bottom
+    if (currentScroll + viewportHeight >= currentHeight - 50) {
+      break;
+    }
+
+    // Scroll in natural chunks (300-700px per step, like reading through content)
+    const scrollChunks = crypto.randomInt(3, 6);
+    for (let i = 0; i < scrollChunks; i++) {
+      const deltaY = crypto.randomInt(300, 700);
+      await page.mouse.wheel(0, deltaY);
+      await randomDelay(400, 1200);
+    }
+
+    // Occasional longer pause to simulate reading a section
+    if (Math.random() < 0.3) {
+      await randomDelay(1500, 3000);
+    }
+
+    const newHeight = await page.evaluate(() => document.body.scrollHeight);
+    if (newHeight === previousHeight) {
+      staleCount++;
+    } else {
+      staleCount = 0;
+    }
+    previousHeight = newHeight;
+  }
+
+  // Final scroll to absolute bottom to ensure comment section is in view
+  await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+  await randomDelay(1000, 2000);
+}
+
+/**
  * Generate cubic bezier point: B(t) = (1-t)^3*P0 + 3*(1-t)^2*t*P1 + 3*(1-t)*t^2*P2 + t^3*P3
  */
 function cubicBezier(

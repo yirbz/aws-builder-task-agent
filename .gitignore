@@ -11,12 +11,18 @@ dist/
 # Runtime data
 data/browser-profile/
 data/streak-agent.db*
+data/streak.db*
+data/streak-registry.json
+data/prometheus/
 data/screenshots/
 data/.scheduler.lock
 
 # Environment & config with secrets
 *.env
 *.env.*
+.env
+.env.*
+!.env.example
 config.json
 
 # Logs
